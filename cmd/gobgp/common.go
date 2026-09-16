@@ -17,7 +17,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto"
 	"crypto/tls"
 	"crypto/x509"
@@ -26,20 +25,18 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
-
-const globalRIBName = "global"
 
 const (
 	cmdGlobal         = "global"
@@ -100,6 +97,7 @@ const (
 
 var subOpts struct {
 	AddressFamily string `short:"a" long:"address-family" description:"specifying an address family"`
+	BatchSize     uint64 `short:"b" long:"batch-size" description:"Size of the temporary buffer in the server memory. Zero is unlimited (default)"`
 }
 
 var neighborsOpts struct {
@@ -116,6 +114,7 @@ var mrtOpts struct {
 	SkipV4      bool   `long:"no-ipv4" description:"Skip importing IPv4 routes"`
 	SkipV6      bool   `long:"no-ipv4" description:"Skip importing IPv6 routes"`
 	NextHop     net.IP `long:"nexthop" description:"Rewrite nexthop"`
+	PeerASN     uint32 `long:"peer-asn" description:"Inject prefixes only from specified AS number"`
 }
 
 var bmpOpts struct {
@@ -148,8 +147,8 @@ func cidr2prefix(cidr string) string {
 		return cidr
 	}
 	var buffer bytes.Buffer
-	for i := 0; i < len(n.IP); i++ {
-		buffer.WriteString(fmt.Sprintf("%08b", n.IP[i]))
+	for i := range len(n.IP) {
+		fmt.Fprintf(&buffer, "%08b", n.IP[i])
 	}
 	ones, _ := n.Mask.Size()
 	return buffer.String()[:ones]
@@ -269,8 +268,8 @@ func loadKeyPEM(filePath string) (crypto.PrivateKey, error) {
 	return nil, errors.New("no private key PEM block found")
 }
 
-func newClient(ctx context.Context) (api.GobgpApiClient, context.CancelFunc, error) {
-	grpcOpts := []grpc.DialOption{grpc.WithBlock()}
+func newConn() (*grpc.ClientConn, error) {
+	grpcOpts := []grpc.DialOption{}
 	if globalOpts.TLS {
 		var creds credentials.TransportCredentials
 		tlsConfig := new(tls.Config)
@@ -309,29 +308,17 @@ func newClient(ctx context.Context) (api.GobgpApiClient, context.CancelFunc, err
 	target := globalOpts.Target
 	if target == "" {
 		target = net.JoinHostPort(globalOpts.Host, strconv.Itoa(globalOpts.Port))
-	} else if strings.HasPrefix(target, "unix://") {
-		target = target[len("unix://"):]
-		dialer := func(ctx context.Context, addr string) (net.Conn, error) {
-			return net.Dial("unix", addr)
-		}
-		grpcOpts = append(grpcOpts, grpc.WithContextDialer(dialer))
 	}
-	cc, cancel := context.WithTimeout(ctx, time.Second)
-
-	conn, err := grpc.DialContext(cc, target, grpcOpts...)
-	if err != nil {
-		return nil, cancel, err
-	}
-	return api.NewGobgpApiClient(conn), cancel, nil
+	return grpc.NewClient(target, grpcOpts...)
 }
 
-func addr2AddressFamily(a net.IP) *api.Family {
-	if a.To4() != nil {
+func addr2AddressFamily(a netip.Addr) *api.Family {
+	if a.Is4() {
 		return &api.Family{
 			Afi:  api.Family_AFI_IP,
 			Safi: api.Family_SAFI_UNICAST,
 		}
-	} else if a.To16() != nil {
+	} else if a.Is6() {
 		return &api.Family{
 			Afi:  api.Family_AFI_IP6,
 			Safi: api.Family_SAFI_UNICAST,
@@ -491,7 +478,7 @@ func exitWithError(err error) {
 	os.Exit(1)
 }
 
-func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) net.IP {
+func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) netip.Addr {
 	for _, attr := range attrs {
 		switch a := attr.(type) {
 		case *bgp.PathAttributeNextHop:
@@ -500,5 +487,5 @@ func getNextHopFromPathAttributes(attrs []bgp.PathAttributeInterface) net.IP {
 			return a.Nexthop
 		}
 	}
-	return nil
+	return netip.Addr{}
 }

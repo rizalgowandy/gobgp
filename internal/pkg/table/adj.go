@@ -17,25 +17,25 @@ package table
 
 import (
 	"fmt"
+	"log/slog"
 
-	"github.com/osrg/gobgp/v3/pkg/log"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
 type AdjRib struct {
-	accepted map[bgp.RouteFamily]int
-	table    map[bgp.RouteFamily]*Table
-	logger   log.Logger
+	accepted map[bgp.Family]int
+	table    map[bgp.Family]*Table
+	logger   *slog.Logger
 }
 
-func NewAdjRib(logger log.Logger, rfList []bgp.RouteFamily) *AdjRib {
-	m := make(map[bgp.RouteFamily]*Table)
+func NewAdjRib(logger *slog.Logger, rfList []bgp.Family) *AdjRib {
+	m := make(map[bgp.Family]*Table)
 	for _, f := range rfList {
 		m[f] = NewTable(logger, f)
 	}
 	return &AdjRib{
 		table:    m,
-		accepted: make(map[bgp.RouteFamily]int),
+		accepted: make(map[bgp.Family]int),
 		logger:   logger,
 	}
 }
@@ -45,13 +45,22 @@ func (adj *AdjRib) Update(pathList []*Path) {
 		if path == nil || path.IsEOR() {
 			continue
 		}
-		rf := path.GetRouteFamily()
-		t := adj.table[path.GetRouteFamily()]
-		d := t.getOrCreateDest(path.GetNlri(), 0)
+		rf := path.GetFamily()
+		t := adj.table[rf]
+		if t == nil {
+			continue
+		}
+		nlri := path.GetNlri()
+		shard := t.destinations.getShard(nlri)
+
+		// Lock shard for entire operation
+		shard.mu.Lock()
+
+		d := t.getOrCreateDest(shard, nlri, 0)
 		var old *Path
 		idx := -1
 		for i, p := range d.knownPathList {
-			if p.GetNlri().PathIdentifier() == path.GetNlri().PathIdentifier() {
+			if p.remoteID == path.remoteID {
 				idx = i
 				break
 			}
@@ -63,12 +72,12 @@ func (adj *AdjRib) Update(pathList []*Path) {
 		if path.IsWithdraw {
 			if idx != -1 {
 				d.knownPathList = append(d.knownPathList[:idx], d.knownPathList[idx+1:]...)
-				if len(d.knownPathList) == 0 {
-					t.deleteDest(d)
-				}
 				if !old.IsRejected() {
 					adj.accepted[rf]--
 				}
+			}
+			if len(d.knownPathList) == 0 {
+				t.deleteDest(shard, d)
 			}
 			path.SetDropped(true)
 		} else {
@@ -89,6 +98,8 @@ func (adj *AdjRib) Update(pathList []*Path) {
 				}
 			}
 		}
+
+		shard.mu.Unlock()
 	}
 }
 
@@ -104,16 +115,24 @@ func (adj *AdjRib) UpdateAdjRibOut(pathList []*Path) {
 		if path == nil || path.IsEOR() {
 			continue
 		}
-		t := adj.table[path.GetRouteFamily()]
-		d := t.getOrCreateDest(path.GetNlri(), 0)
+		t := adj.table[path.GetFamily()]
+		if t == nil {
+			continue
+		}
+		nlri := path.GetNlri()
+		shard := t.destinations.getShard(nlri)
+
+		shard.mu.Lock()
+		d := t.getOrCreateDest(shard, nlri, 0)
 		d.knownPathList = append(d.knownPathList, path)
+		shard.mu.Unlock()
 	}
 }
 
-func (adj *AdjRib) walk(families []bgp.RouteFamily, fn func(*Destination) bool) {
+func (adj *AdjRib) walk(families []bgp.Family, fn func(*destination) bool) {
 	for _, f := range families {
 		if t, ok := adj.table[f]; ok {
-			for _, d := range t.destinations {
+			for _, d := range t.GetDestinations() {
 				if fn(d) {
 					return
 				}
@@ -122,9 +141,37 @@ func (adj *AdjRib) walk(families []bgp.RouteFamily, fn func(*Destination) bool) 
 	}
 }
 
-func (adj *AdjRib) PathList(rfList []bgp.RouteFamily, accepted bool) []*Path {
+func (adj *AdjRib) walkActive(families []bgp.Family, fn func(*destination) bool) {
+	for _, f := range families {
+		t, ok := adj.table[f]
+		if !ok {
+			continue
+		}
+		for _, shard := range t.destinations.shards {
+			shard.mu.Lock()
+			stop := false
+			for _, dests := range shard.mp {
+				for _, d := range dests {
+					if fn(d) {
+						stop = true
+						break
+					}
+				}
+				if stop {
+					break
+				}
+			}
+			shard.mu.Unlock()
+			if stop {
+				return
+			}
+		}
+	}
+}
+
+func (adj *AdjRib) PathList(rfList []bgp.Family, accepted bool) []*Path {
 	pathList := make([]*Path, 0, adj.Count(rfList))
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walk(rfList, func(d *destination) bool {
 		for _, p := range d.knownPathList {
 			if accepted && p.IsRejected() {
 				continue
@@ -136,16 +183,16 @@ func (adj *AdjRib) PathList(rfList []bgp.RouteFamily, accepted bool) []*Path {
 	return pathList
 }
 
-func (adj *AdjRib) Count(rfList []bgp.RouteFamily) int {
+func (adj *AdjRib) Count(rfList []bgp.Family) int {
 	count := 0
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walk(rfList, func(d *destination) bool {
 		count += len(d.knownPathList)
 		return false
 	})
 	return count
 }
 
-func (adj *AdjRib) Accepted(rfList []bgp.RouteFamily) int {
+func (adj *AdjRib) Accepted(rfList []bgp.Family) int {
 	count := 0
 	for _, rf := range rfList {
 		if n, ok := adj.accepted[rf]; ok {
@@ -155,9 +202,9 @@ func (adj *AdjRib) Accepted(rfList []bgp.RouteFamily) int {
 	return count
 }
 
-func (adj *AdjRib) Drop(rfList []bgp.RouteFamily) []*Path {
+func (adj *AdjRib) Drop(rfList []bgp.Family) []*Path {
 	l := make([]*Path, 0, adj.Count(rfList))
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walk(rfList, func(d *destination) bool {
 		for _, p := range d.knownPathList {
 			w := p.Clone(true)
 			w.SetDropped(true)
@@ -172,9 +219,9 @@ func (adj *AdjRib) Drop(rfList []bgp.RouteFamily) []*Path {
 	return l
 }
 
-func (adj *AdjRib) DropStale(rfList []bgp.RouteFamily) []*Path {
+func (adj *AdjRib) DropStale(rfList []bgp.Family) []*Path {
 	pathList := make([]*Path, 0, adj.Count(rfList))
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walk(rfList, func(d *destination) bool {
 		for _, p := range d.knownPathList {
 			if p.IsStale() {
 				w := p.Clone(true)
@@ -188,9 +235,9 @@ func (adj *AdjRib) DropStale(rfList []bgp.RouteFamily) []*Path {
 	return pathList
 }
 
-func (adj *AdjRib) StaleAll(rfList []bgp.RouteFamily) []*Path {
+func (adj *AdjRib) StaleAll(rfList []bgp.Family) []*Path {
 	pathList := make([]*Path, 0, adj.Count(rfList))
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walkActive(rfList, func(d *destination) bool {
 		for i, p := range d.knownPathList {
 			n := p.Clone(false)
 			n.MarkStale(true)
@@ -205,9 +252,9 @@ func (adj *AdjRib) StaleAll(rfList []bgp.RouteFamily) []*Path {
 	return pathList
 }
 
-func (adj *AdjRib) MarkLLGRStaleOrDrop(rfList []bgp.RouteFamily) []*Path {
+func (adj *AdjRib) MarkLLGRStaleOrDrop(rfList []bgp.Family) []*Path {
 	pathList := make([]*Path, 0, adj.Count(rfList))
-	adj.walk(rfList, func(d *Destination) bool {
+	adj.walkActive(rfList, func(d *destination) bool {
 		for i, p := range d.knownPathList {
 			if p.HasNoLLGR() {
 				n := p.Clone(true)
@@ -230,7 +277,7 @@ func (adj *AdjRib) MarkLLGRStaleOrDrop(rfList []bgp.RouteFamily) []*Path {
 	return pathList
 }
 
-func (adj *AdjRib) Select(family bgp.RouteFamily, accepted bool, option ...TableSelectOption) (*Table, error) {
+func (adj *AdjRib) Select(family bgp.Family, accepted bool, option ...TableSelectOption) (*Table, error) {
 	t, ok := adj.table[family]
 	if !ok {
 		t = NewTable(adj.logger, family)
@@ -239,12 +286,12 @@ func (adj *AdjRib) Select(family bgp.RouteFamily, accepted bool, option ...Table
 	return t.Select(option...)
 }
 
-func (adj *AdjRib) TableInfo(family bgp.RouteFamily) (*TableInfo, error) {
+func (adj *AdjRib) TableInfo(family bgp.Family) (*TableInfo, error) {
 	if _, ok := adj.table[family]; !ok {
 		return nil, fmt.Errorf("%s unsupported", family)
 	}
-	c := adj.Count([]bgp.RouteFamily{family})
-	a := adj.Accepted([]bgp.RouteFamily{family})
+	c := adj.Count([]bgp.Family{family})
+	a := adj.Accepted([]bgp.Family{family})
 	return &TableInfo{
 		NumDestination: c,
 		NumPath:        c,

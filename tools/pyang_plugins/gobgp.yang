@@ -173,14 +173,14 @@ module gobgp {
     base bgp-types:afi-safi-type;
     description
       "MUP IPv4 (AFI,SAFI = 1,85)";
-    reference "https://www.ietf.org/archive/id/draft-mpmz-bess-mup-safi-01.html";
+    reference "https://www.ietf.org/archive/id/draft-ietf-bess-mup-safi-01.html";
   }
 
   identity IPV6-MUP {
     base bgp-types:afi-safi-type;
     description
       "MUP IPv6 (AFI,SAFI = 2,85)";
-    reference "https://www.ietf.org/archive/id/draft-mpmz-bess-mup-safi-01.html";
+    reference "https://www.ietf.org/archive/id/draft-ietf-bess-mup-safi-01.html";
   }
 
   grouping gobgp-message-counter {
@@ -296,31 +296,6 @@ module gobgp {
     }
   }
 
-
-  grouping gobgp-in-policy {
-    description
-      "additional policy";
-
-    leaf-list in-policy {
-      type leafref {
-        path "/rpol:routing-policy/rpol:policy-definitions/" +
-            "rpol:policy-definition/rpol:name";
-        //require-instance true;
-      }
-      description
-        "list of policy names in sequence to be applied on
-        sending a routing update in the current context, e.g.,
-        for the current other route server clients.";
-    }
-
-    leaf default-in-policy {
-      type rpol:default-policy-type;
-      default REJECT-ROUTE;
-      description
-        "explicitly set a default policy if no policy definition
-        in the in-policy chain is satisfied.";
-    }
-  }
 
   grouping gobgp-route-server-config {
     description
@@ -782,8 +757,11 @@ module gobgp {
 	      leaf peer-restart-time {
 		  type uint32;
 	      }
+        leaf running {
+          type boolean;
+        }
 	      leaf peer-restart-timer-expired {
-		  type boolean;
+		      type boolean;
 	      }
 	  }
       }
@@ -846,12 +824,20 @@ module gobgp {
     uses gobgp-adjacent-table;
   }
 
+  // The bodies of these typedefs are never used. bgpyang2golang.py maps each
+  // type name to a Go type through _type_translation_map, and skips the
+  // typedef itself through _typedef_exclude. They exist so that pyang can
+  // resolve the references below.
   typedef bgp-capability {
       type uint8;
   }
 
   typedef bgp-open-message {
       type uint8;
+  }
+
+  typedef route-family {
+      type uint32;
   }
 
   augment "/bgp:bgp/bgp:neighbors/bgp:neighbor/bgp:state" {
@@ -935,7 +921,7 @@ module gobgp {
 
   augment "/bgp:bgp/bgp:neighbors/bgp:neighbor/bgp:state" {
     leaf remote-router-id {
-        type string;
+        type inet:ipv4-address;
     }
   }
 
@@ -949,14 +935,14 @@ module gobgp {
       type inet:port-number;
     }
 
-    leaf ttl {
-      description "TTL value for BGP packets";
-      type uint8;
-    }
-
     leaf bind-interface {
       description "Interface name for binding.";
       type string;
+    }
+
+    leaf ip-tos {
+      description "IPv4 Type of Service/IPv6 Traffic Class value set on BGP TCP socket.";
+      type uint8;
     }
   }
 
@@ -977,6 +963,9 @@ module gobgp {
       type boolean;
     }
     leaf end-of-rib-sent {
+      type boolean;
+    }
+    leaf running {
       type boolean;
     }
   }
@@ -1039,18 +1028,6 @@ module gobgp {
     uses gobgp-ttl-security-config-set;
    }
 
-  augment "/bgp:bgp/bgp:global/bgp:apply-policy/bgp:config" {
-    description "addtional policy";
-    uses gobgp-in-policy;
-
-  }
-
-  augment "/bgp:bgp/bgp:global/bgp:apply-policy/bgp:state" {
-    description "additional policy";
-    uses gobgp-in-policy;
-
-  }
-
   augment "/rpol:routing-policy/rpol:policy-definitions/" +
     "rpol:policy-definition/rpol:statements/rpol:statement/" +
     "rpol:actions/bgp-pol:bgp-actions/bgp-pol:set-as-path-prepend" {
@@ -1075,7 +1052,26 @@ module gobgp {
     leaf-list neighbor-info {
       description
             "neighbor ip address or prefix";
-      type inet:ip-address;
+      type string;
+    }
+  }
+
+  // ip-prefix and rtc-prefix are mutually exclusive. That cannot be expressed
+  // here: ip-prefix is a key leaf of rpol:prefix, and RFC 7950 7.8.2 says any
+  // "mandatory" statement in a key leaf is ignored. Prefix.ToPrefix() rejects
+  // an entry that sets both. The existing match-prefix-set condition is reused
+  // for RTC (RF_RTC_UC) paths.
+  augment "/rpol:routing-policy/rpol:defined-sets/rpol:prefix-sets/" +
+      "rpol:prefix-set/rpol:prefix" {
+    leaf rtc-prefix {
+      type string {
+        pattern '\d+(\.\d+)?:(\d+\.\d+\.\d+\.\d+|\d+(\.\d+)?):\d+(/\d+)?';
+      }
+      description
+        "Route Target in RFC 4684 NLRI key form:
+        <origin-as>:<route-target>[/<masklen>], where <route-target> follows
+        the extended community Route Target notation. Mutually exclusive with
+        ip-prefix.";
     }
   }
 
@@ -1224,7 +1220,7 @@ module gobgp {
           "Configures a file name to be written";
       }
       leaf table-name {
-        type string;
+        type inet:ip-address;
         description
           "specify the table name with route server setup";
       }
@@ -1312,38 +1308,15 @@ module gobgp {
     uses zebra-set;
   }
 
-  grouping collector-config {
-    leaf url {
-      type string;
-    }
-    leaf db-name {
-      type string;
-    }
-    leaf table-dump-interval {
-      type uint64;
-    }
-  }
-
-  grouping collector-set {
-    container collector {
-      container config {
-        uses collector-config;
-      }
-      container state {
-        uses collector-config;
-      }
-    }
-  }
-
-  augment "/bgp:bgp" {
-    uses collector-set;
-  }
-
   grouping listen-config {
     leaf port {
         type int32;
     }
     leaf-list local-address {
+        type inet:ip-address;
+    }
+    leaf bind-to-device {
+        description "Device name for binding the BGP listener socket.";
         type string;
     }
   }
@@ -1384,7 +1357,7 @@ module gobgp {
      This configuration structure was taken from the latest openconfig.";
 
     leaf prefix {
-      type string;
+      type inet:ip-prefix;
     }
     leaf peer-group {
       type string;
@@ -1457,5 +1430,453 @@ module gobgp {
           uses bgp:bgp-neighbor-add-paths_config;
       }
     }
+  }
+
+  augment "/bgp:bgp/bgp:neighbors/bgp:neighbor/bgp:as-path-options/bgp:config" {
+    leaf allow-as-path-loop-local {
+      type boolean;
+      description
+        "Bypasses as-path loop detection on locally sourced (static) routes
+        when exporting towards iBGP neighbors. This is needed in some environments
+        where gobgp is functioning as a route injector. Non-local routes
+        are still checked for as-path loops.";
+    }
+  }
+
+  augment "/bgp:bgp/bgp:neighbors/bgp:neighbor/bgp:as-path-options/bgp:state" {
+    leaf allow-as-path-loop-local {
+      type boolean;
+      description
+        "Bypasses as-path loop detection on locally sourced (static) routes
+        when exporting towards iBGP neighbors. This is needed in some environments
+        where gobgp is functioning as a route injector. Non-local routes
+        are still checked for as-path loops.";
+    }
+  }
+
+  typedef bfd-session-state {
+    type enumeration {
+      enum UP {
+        description "BFD session is up.";
+      }
+      enum DOWN {
+        description "BFD session is down.";
+      }
+      enum ADMIN_DOWN {
+        description "BFD session is administratively down.";
+      }
+      enum INIT {
+        description "BFD session is in the INIT state.";
+      }
+    }
+  }
+
+  typedef bfd-diagnostic-code {
+    type enumeration {
+      enum NO_DIAGNOSTIC {
+        description "No diagnostic.";
+      }
+      enum DETECTION_TIMEOUT {
+        description "Control detection time expired.";
+      }
+      enum ECHO_FAILED {
+        description "Echo function failed.";
+      }
+      enum NEIGHBOR_SIGNALED_SESSION_DOWN {
+        description "Neighbor signaled session down.";
+      }
+      enum FORWARDING_PLANE_RESET {
+        description "Forwarding plane reset.";
+      }
+      enum PATH_DOWN {
+        description "Path down.";
+      }
+      enum CONCATENATED_PATH_DOWN {
+        description "Concatenated path down.";
+      }
+      enum ADMINISTRATIVELY_DOWN {
+        description "Administratively down.";
+      }
+      enum REVERSE_CONCATENATED_PATH_DOWN {
+        description "Reverse concatenated path down.";
+      }
+    }
+    reference "RFC 5880 §4.1";
+  }
+
+  grouping gobgp-bfd-config {
+    description
+      "Per-neighbor BFD session parameters (RFC 5880).";
+
+    leaf enabled {
+      type boolean;
+      default "false";
+      description
+        "Enable BFD liveness detection for this BGP neighbor.";
+    }
+
+    leaf port {
+      type uint16;
+      default 3784;
+      description
+        "Destination UDP port for BFD control packets.
+        Using a non-default port deviates from RFC 5881,
+        which explicitly mandates destination UDP port 3784.";
+      reference "RFC 5881 §4";
+    }
+
+    leaf desired-minimum-tx-interval {
+      type uint32;
+      units microseconds;
+      default 1000000;
+      description
+        "Desired minimum transmission interval for BFD control packets.";
+      reference "RFC 5880 §6.8.7";
+    }
+
+    leaf required-minimum-receive {
+      type uint32;
+      units microseconds;
+      default 1000000;
+      description
+        "Required minimum receive interval for BFD control packets.";
+      reference "RFC 5880 §6.8.8";
+    }
+
+    leaf detection-multiplier {
+      type uint8 {
+        range "1..255";
+      }
+      default 3;
+      description
+        "Detection time multiplier.";
+      reference "RFC 5880 §6.8.5";
+    }
+  }
+
+  grouping gobgp-bfd-state {
+    description
+      "Operational state leaves for a BFD session.";
+
+    leaf session-state {
+      type bfd-session-state;
+      description "Local view of the BFD session state.";
+    }
+
+    leaf remote-session-state {
+      type bfd-session-state;
+      description "Remote view of the BFD session state.";
+    }
+
+    leaf last-failure-time {
+      type uint64;
+      units nanoseconds;
+      description
+        "Nanoseconds since the Unix epoch at which the last session failure occurred.";
+    }
+
+    leaf failure-transitions {
+      type uint64;
+      description "Number of UP-to-DOWN transitions.";
+    }
+
+    leaf local-discriminator {
+      type uint32;
+      description "Unique local discriminator for this BFD session.";
+      reference "RFC 5880 §4.1";
+    }
+
+    leaf remote-discriminator {
+      type uint32;
+      description "Discriminator received from the remote system.";
+      reference "RFC 5880 §4.1";
+    }
+
+    leaf local-diagnostic-code {
+      type bfd-diagnostic-code;
+      description "Diagnostic code for the last local session failure.";
+    }
+
+    leaf remote-diagnostic-code {
+      type bfd-diagnostic-code;
+      description "Diagnostic code received from the remote system.";
+    }
+
+    leaf remote-minimum-receive-interval {
+      type uint32;
+      units microseconds;
+      description "Required minimum receive interval advertised by the remote system.";
+    }
+
+    container bfd-async {
+      description "Counters for BFD asynchronous-mode control packets.";
+
+      leaf last-packet-transmitted {
+        type uint64;
+        units nanoseconds;
+        description "Nanoseconds since the Unix epoch at which the last BFD packet was transmitted.";
+      }
+
+      leaf last-packet-received {
+        type uint64;
+        units nanoseconds;
+        description "Nanoseconds since the Unix epoch at which the last BFD packet was received.";
+      }
+
+      leaf transmitted-packets {
+        type uint64;
+        description "Total number of BFD control packets transmitted.";
+      }
+
+      leaf received-packets {
+        type uint64;
+        description "Total number of BFD control packets received.";
+      }
+    }
+  }
+
+  grouping gobgp-bfd-config-set {
+    description
+      "BFD configuration and state for a BGP neighbor or peer-group.";
+
+    container bfd {
+      description
+        "Configure BFD liveness detection for this BGP neighbor.";
+
+      container config {
+        description
+          "BFD configuration parameters.";
+        uses gobgp-bfd-config;
+      }
+
+      container state {
+        config false;
+        description
+          "BFD configuration and operational state.";
+        uses gobgp-bfd-config;
+        uses gobgp-bfd-state;
+      }
+    }
+  }
+
+  augment "/bgp:bgp/bgp:peer-groups/bgp:peer-group" {
+    description "BFD configuration for peer-group";
+    uses gobgp-bfd-config-set;
+  }
+
+  augment "/bgp:bgp/bgp:neighbors/bgp:neighbor" {
+    description "BFD configuration for neighbor";
+    uses gobgp-bfd-config-set;
+  }
+
+  // The keychain definitions below follow the structure of
+  // openconfig-keychain 0.5.0, limited to fields supported by GoBGP.
+
+  identity crypto-type {
+    description
+      "Base identify for the cryptographic algorithm";
+  }
+
+  identity hmac-sha-1-96 {
+    base crypto-type;
+    description
+      "HMAC-SHA-1-96 keyed hash algorithm constructed from SHA-1 hash
+      function and used as a HMAC, operating on 64-byte blocks of data.";
+    reference
+      "RFC 2404 - The Use of HMAC-SHA-1-96 within ESP and AH";
+  }
+
+  identity aes-128-cmac-96 {
+    base crypto-type;
+    description
+      "AES-128-CMAC-96 keyed hash function based on a AES-128 block
+      cipher.";
+    reference
+      "RFC 4494 - The AES-CMAC-96 Algorithm and Its Use with IPsec";
+  }
+
+  identity hmac-sha-256-96 {
+    base crypto-type;
+    description
+      "HMAC-SHA-256 with a 96-bit MAC.";
+  }
+
+  identity hmac-sha-256-128 {
+    base crypto-type;
+    description
+      "HMAC-SHA-256 with a 128-bit MAC.";
+  }
+
+  typedef keychain-ref {
+    type leafref {
+      path "/gobgp:keychains/gobgp:keychain/" +
+           "gobgp:config/gobgp:name";
+    }
+    description
+      "A reference to a keychain defined on the system that can be used by
+      modules that require access to keychains.";
+  }
+
+  grouping keychain-base-config {
+    description
+      "This grouping defines key-chain parameters.";
+
+    leaf name {
+      type string;
+      description
+        "Keychain name.";
+    }
+  }
+
+  grouping keychain-key-config {
+    description "This grouping defines key-chain key parameters.";
+
+    leaf key-id {
+      type uint8;
+      description
+        "TCP-AO send key identifier associated with this key.";
+    }
+
+    leaf secret-key {
+      type string;
+      description
+        "Base64-encoded TCP-AO master key.";
+    }
+
+    leaf crypto-algorithm {
+      type identityref {
+        base crypto-type;
+      }
+      description
+        "Cryptographic algorithm associated with the key.  Note that not all cryptographic
+        algorithms are available in all contexts (e.g., across different protocols).";
+    }
+
+    leaf receive-id {
+      type uint8;
+      description
+        "TCP-AO receive key identifier associated with this key.";
+    }
+
+    leaf exclude-tcp-options {
+      type boolean;
+      description
+        "Exclude TCP options from TCP-AO message authentication.";
+    }
+  }
+
+  grouping keychain-key-base {
+    description
+      "This grouping defines keychain parameters";
+
+    container keys {
+      description
+        "list of keys to be stored";
+
+      list key {
+        key "key-id";
+        description
+          "List of configured keys for the keychain.";
+
+        leaf key-id {
+          type leafref {
+            path "../config/key-id";
+          }
+          description
+            "Reference to key id.";
+        }
+
+        container config {
+          description
+            "This container defines keychain key configuration.";
+
+          uses keychain-key-config;
+        }
+      }
+    }
+  }
+
+  grouping keychain-common-base {
+    description
+      "This grouping defines keychain parameters";
+
+    container config {
+      description
+        "This container defines keychain configuration.";
+
+      uses keychain-base-config;
+    }
+  }
+
+  grouping keychain-top {
+    description
+      "This grouping define top level structure.";
+
+    container keychains {
+      description
+        "This container defines keychains.";
+
+      list keychain {
+        key "name";
+        description
+          "List of defined keychains.";
+
+        leaf name {
+          type leafref {
+            path "../config/name";
+          }
+          description
+            "Reference to configured keychain name";
+        }
+
+        uses keychain-common-base;
+        uses keychain-key-base;
+      }
+    }
+  }
+
+  uses keychain-top;
+
+  grouping gobgp-tcp-ao-config {
+    description
+      "TCP-AO keychain attachment for a BGP neighbor or peer-group.";
+
+    leaf keychain {
+      type keychain-ref;
+      mandatory true;
+      description
+        "Reference to the TCP-AO keychain used by the peer.";
+    }
+
+    leaf send-id {
+      type uint8;
+      mandatory true;
+      description
+        "TCP-AO send key identifier.";
+    }
+  }
+
+  grouping gobgp-tcp-ao-config-set {
+    container tcp-ao {
+      presence "Enables TCP-AO for the BGP transport.";
+      description
+        "TCP-AO configuration for a BGP neighbor or peer-group.";
+
+      container config {
+        description
+          "TCP-AO configuration parameters.";
+        uses gobgp-tcp-ao-config;
+      }
+    }
+  }
+
+  augment "/bgp:bgp/bgp:peer-groups/bgp:peer-group" {
+    description "TCP-AO configuration for peer-group";
+    uses gobgp-tcp-ao-config-set;
+  }
+
+  augment "/bgp:bgp/bgp:neighbors/bgp:neighbor" {
+    description "TCP-AO configuration for neighbor";
+    uses gobgp-tcp-ao-config-set;
   }
 }

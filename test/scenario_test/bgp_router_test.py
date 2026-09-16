@@ -22,9 +22,8 @@ import unittest
 import collections
 collections.Callable = collections.abc.Callable
 
-import nose
 
-from lib.noseplugin import OptionParser, parser_option
+from lib.noseplugin import parser_option
 
 from lib import base
 from lib.base import (
@@ -347,10 +346,10 @@ class GoBGPTestBase(unittest.TestCase):
 
         paths = g1.get_adj_rib_out(q1, '30.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertNotIn('source-id', paths[0])
+        self.assertNotIn('peer-id', paths[0])
         paths = g1.get_adj_rib_out(q2, '30.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertNotIn('source-id', paths[0])
+        self.assertNotIn('peer-id', paths[0])
 
         g1.local('gobgp global rib del 30.0.0.0/24')
 
@@ -359,7 +358,7 @@ class GoBGPTestBase(unittest.TestCase):
             self.assertEqual(len(paths), 0)
             paths = g1.get_adj_rib_out(q2, '30.0.0.0/24')
             self.assertEqual(len(paths), 1)
-            self.assertEqual(paths[0]['source-id'], '192.168.0.2')
+            self.assertEqual(paths[0]['peer-id'], '192.168.0.2')
 
         assert_several_times(f)
 
@@ -461,13 +460,13 @@ class GoBGPTestBase(unittest.TestCase):
         self.assertEqual(len(paths), 0)
         paths = g1.get_adj_rib_out(g4, '50.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertEqual(paths[0]['source-id'], '192.168.0.8')
+        self.assertEqual(paths[0]['peer-id'], '192.168.0.8')
 
         g3.local('gobgp global rib del 50.0.0.0/24')
 
         paths = g1.get_adj_rib_out(g3, '50.0.0.0/24')
         self.assertEqual(len(paths), 1)
-        self.assertEqual(paths[0]['source-id'], '192.168.0.9')
+        self.assertEqual(paths[0]['peer-id'], '192.168.0.9')
         paths = g1.get_adj_rib_out(g4, '50.0.0.0/24')
         self.assertEqual(len(paths), 0)
 
@@ -576,11 +575,3 @@ class GoBGPTestBase(unittest.TestCase):
         q9.wait_for(expected_state=BGP_FSM_ESTABLISHED, peer=g6, timeout=30)
 
 
-if __name__ == '__main__':
-    output = local("which docker 2>&1 > /dev/null ; echo $?", capture=True)
-    if int(output) != 0:
-        print("docker not found")
-        sys.exit(1)
-
-    nose.main(argv=sys.argv, addplugins=[OptionParser()],
-              defaultTest=sys.argv[0])

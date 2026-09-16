@@ -12,26 +12,62 @@
 // implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//go:build !windows
-// +build !windows
 
 package server
 
 import (
-	"net"
-	"strings"
-	"syscall"
+	"math/rand/v2"
 
 	"github.com/eapache/channels"
 
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
+
+func randRange(min int, max int) int {
+	return min + rand.IntN(max-min+1)
+}
+
+// randomBFDMyDiscriminator returns a non-zero 32-bit value for RFC 5880
+// My Discriminator. It does not use randRange with MaxUint32 because int
+// on 32-bit architectures cannot represent that upper bound.
+func randomBFDMyDiscriminator() uint32 {
+	for {
+		v := rand.Uint32()
+		if v != 0 {
+			return v
+		}
+	}
+}
+
+func nonblockSendChannel[T any](ch chan<- T, item T) bool {
+	select {
+	case ch <- item:
+		// sent
+		return true
+	default:
+		// drop the item
+		return false
+	}
+}
+
+func drainChannel[T any](ch <-chan T) {
+	for {
+		select {
+		case _, ok := <-ch:
+			if !ok {
+				return
+			}
+			// drain the channel
+		default:
+			return
+		}
+	}
+}
 
 func cleanInfiniteChannel(ch *channels.InfiniteChannel) {
 	ch.Close()
 	// drain all remaining items
-	for range ch.Out() {
-	}
+	drainChannel(ch.Out())
 }
 
 // Returns the binary formatted Administrative Shutdown Communication from the
@@ -57,60 +93,9 @@ func decodeAdministrativeCommunication(data []byte) (string, []byte) {
 	if len(data) == 0 {
 		return "", data
 	}
-	communicationLen := int(data[0])
-	if communicationLen > bgp.BGP_ERROR_ADMINISTRATIVE_COMMUNICATION_MAX {
-		communicationLen = bgp.BGP_ERROR_ADMINISTRATIVE_COMMUNICATION_MAX
-	}
+	communicationLen := min(int(data[0]), bgp.BGP_ERROR_ADMINISTRATIVE_COMMUNICATION_MAX)
 	if communicationLen > len(data)-1 {
 		communicationLen = len(data) - 1
 	}
 	return string(data[1 : communicationLen+1]), data[communicationLen+1:]
-}
-
-func extractFamilyFromTCPConn(conn *net.TCPConn) int {
-	family := syscall.AF_INET
-	if strings.Contains(conn.RemoteAddr().String(), "[") {
-		family = syscall.AF_INET6
-	}
-	return family
-}
-
-func setsockOptString(sc syscall.RawConn, level int, opt int, str string) error {
-	var opterr error
-	fn := func(s uintptr) {
-		opterr = syscall.SetsockoptString(int(s), level, opt, str)
-	}
-	err := sc.Control(fn)
-	if opterr == nil {
-		return err
-	}
-	return opterr
-}
-
-func setsockOptInt(sc syscall.RawConn, level, name, value int) error {
-	var opterr error
-	fn := func(s uintptr) {
-		opterr = syscall.SetsockoptInt(int(s), level, name, value)
-	}
-	err := sc.Control(fn)
-	if opterr == nil {
-		return err
-	}
-	return opterr
-}
-
-func setsockoptIpTtl(sc syscall.RawConn, family int, value int) error {
-	level := syscall.IPPROTO_IP
-	name := syscall.IP_TTL
-	if family == syscall.AF_INET6 {
-		level = syscall.IPPROTO_IPV6
-		name = syscall.IPV6_UNICAST_HOPS
-	}
-	return setsockOptInt(sc, level, name, value)
-}
-
-func setsockoptTcpMss(sc syscall.RawConn, family int, value uint16) error {
-	level := syscall.IPPROTO_TCP
-	name := syscall.TCP_MAXSEG
-	return setsockOptInt(sc, level, name, int(value))
 }

@@ -1,18 +1,18 @@
 package oc
 
 import (
-	"encoding/binary"
 	"fmt"
 	"math"
 	"net"
+	"net/netip"
 	"reflect"
-	"strconv"
+	"slices"
 
-	"github.com/osrg/gobgp/v3/internal/pkg/version"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
-	"github.com/osrg/gobgp/v3/pkg/packet/bmp"
-	"github.com/osrg/gobgp/v3/pkg/packet/rtr"
-	"github.com/osrg/gobgp/v3/pkg/zebra"
+	"github.com/osrg/gobgp/v4/internal/pkg/version"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bmp"
+	"github.com/osrg/gobgp/v4/pkg/packet/rtr"
+	"github.com/osrg/gobgp/v4/pkg/zebra"
 	"github.com/spf13/viper"
 )
 
@@ -27,11 +27,11 @@ var forcedOverwrittenConfig = []string{
 	"neighbor.timers.config.minimum-advertisement-interval",
 }
 
-var configuredFields map[string]interface{}
+var configuredFields map[string]any
 
-func RegisterConfiguredFields(addr string, n interface{}) {
+func RegisterConfiguredFields(addr string, n any) {
 	if configuredFields == nil {
-		configuredFields = make(map[string]interface{})
+		configuredFields = make(map[string]any)
 	}
 	configuredFields[addr] = n
 }
@@ -78,23 +78,16 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 	}
 
 	if n.Config.LocalAs == 0 {
-		n.Config.LocalAs = g.Config.As
-		if !g.Confederation.Config.Enabled || n.IsConfederation(g) {
-			n.Config.LocalAs = g.Config.As
-		} else {
-			n.Config.LocalAs = g.Confederation.Config.Identifier
-		}
+		n.Config.LocalAs = getLocalAsForPeer(g, n.Config.PeerAs)
 	}
 	n.State.LocalAs = n.Config.LocalAs
 
-	if n.Config.PeerAs != n.Config.LocalAs {
-		n.Config.PeerType = PEER_TYPE_EXTERNAL
-		n.State.PeerType = PEER_TYPE_EXTERNAL
+	n.Config.PeerType = getConfigPeerType(n.Config.PeerAs, n.Config.LocalAs)
+	n.State.PeerType = n.Config.PeerType
+	if n.Config.PeerType == PEER_TYPE_EXTERNAL {
 		n.State.RemovePrivateAs = n.Config.RemovePrivateAs
 		n.AsPathOptions.State.ReplacePeerAs = n.AsPathOptions.Config.ReplacePeerAs
 	} else {
-		n.Config.PeerType = PEER_TYPE_INTERNAL
-		n.State.PeerType = PEER_TYPE_INTERNAL
 		if string(n.Config.RemovePrivateAs) != "" {
 			return fmt.Errorf("can't set remove-private-as for iBGP peer")
 		}
@@ -103,12 +96,13 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 		}
 	}
 
-	if n.State.NeighborAddress == "" {
+	if !n.State.NeighborAddress.IsValid() {
 		n.State.NeighborAddress = n.Config.NeighborAddress
 	}
 
 	n.State.PeerAs = n.Config.PeerAs
 	n.AsPathOptions.State.AllowOwnAs = n.AsPathOptions.Config.AllowOwnAs
+	n.AsPathOptions.State.AllowAsPathLoopLocal = n.AsPathOptions.Config.AllowAsPathLoopLocal
 
 	if !v.IsSet("neighbor.error-handling.config.treat-as-withdraw") {
 		n.ErrorHandling.Config.TreatAsWithdraw = true
@@ -135,14 +129,14 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 		if err != nil {
 			return err
 		}
-		n.State.NeighborAddress = addr
+		n.State.NeighborAddress = netip.MustParseAddr(addr)
 	}
 
-	if n.Transport.Config.LocalAddress == "" {
-		if n.State.NeighborAddress == "" {
+	if !n.Transport.Config.LocalAddress.IsValid() {
+		if !n.State.NeighborAddress.IsValid() {
 			return fmt.Errorf("no neighbor address/interface specified")
 		}
-		ipAddr, err := net.ResolveIPAddr("ip", n.State.NeighborAddress)
+		ipAddr, err := net.ResolveIPAddr("ip", n.State.NeighborAddress.String())
 		if err != nil {
 			return err
 		}
@@ -156,7 +150,7 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 				}
 			}
 		}
-		n.Transport.Config.LocalAddress = localAddress
+		n.Transport.Config.LocalAddress = netip.MustParseAddr(localAddress)
 	}
 
 	if len(n.AfiSafis) == 0 {
@@ -165,7 +159,7 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 				defaultAfiSafi(AFI_SAFI_TYPE_IPV4_UNICAST, true),
 				defaultAfiSafi(AFI_SAFI_TYPE_IPV6_UNICAST, true),
 			}
-		} else if ipAddr, err := net.ResolveIPAddr("ip", n.State.NeighborAddress); err != nil {
+		} else if ipAddr, err := net.ResolveIPAddr("ip", n.State.NeighborAddress.String()); err != nil {
 			return fmt.Errorf("invalid neighbor address: %s", n.State.NeighborAddress)
 		} else if ipAddr.IP.To4() != nil {
 			n.AfiSafis = []AfiSafi{defaultAfiSafi(AFI_SAFI_TYPE_IPV4_UNICAST, true)}
@@ -188,7 +182,7 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 			if len(afs) > i {
 				vv.Set("afi-safi", afs[i])
 			}
-			rf, err := bgp.GetRouteFamily(string(n.AfiSafis[i].Config.AfiSafiName))
+			rf, err := bgp.GetFamily(string(n.AfiSafis[i].Config.AfiSafiName))
 			if err != nil {
 				return err
 			}
@@ -234,7 +228,7 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 
 	if n.EbgpMultihop.Config.Enabled {
 		if n.TtlSecurity.Config.Enabled {
-			return fmt.Errorf("ebgp-multihop and ttl-security are mututally exclusive")
+			return fmt.Errorf("ebgp-multihop and ttl-security are mutually exclusive")
 		}
 		if n.EbgpMultihop.Config.MultihopTtl == 0 {
 			n.EbgpMultihop.Config.MultihopTtl = 255
@@ -246,23 +240,72 @@ func setDefaultNeighborConfigValuesWithViper(v *viper.Viper, n *Neighbor, g *Glo
 	}
 
 	if n.RouteReflector.Config.RouteReflectorClient {
-		if n.RouteReflector.Config.RouteReflectorClusterId == "" {
-			n.RouteReflector.State.RouteReflectorClusterId = RrClusterIdType(g.Config.RouterId)
-		} else {
-			id := string(n.RouteReflector.Config.RouteReflectorClusterId)
-			if ip := net.ParseIP(id).To4(); ip != nil {
-				n.RouteReflector.State.RouteReflectorClusterId = n.RouteReflector.Config.RouteReflectorClusterId
-			} else if num, err := strconv.ParseUint(id, 10, 32); err == nil {
-				ip = make(net.IP, 4)
-				binary.BigEndian.PutUint32(ip, uint32(num))
-				n.RouteReflector.State.RouteReflectorClusterId = RrClusterIdType(ip.String())
-			} else {
-				return fmt.Errorf("route-reflector-cluster-id should be specified as IPv4 address or 32-bit unsigned integer")
-			}
+		clusterId, err := getConfigClusterId(g, n.RouteReflector.Config.RouteReflectorClusterId)
+		if err != nil {
+			return err
 		}
+		n.RouteReflector.State.RouteReflectorClusterId = clusterId
+	}
+	if n.Bfd.Config.Port == 0 {
+		// RFC 5881: BFD control packets port
+		n.Bfd.Config.Port = 3784
+	}
+	if n.Bfd.Config.DetectionMultiplier == 0 {
+		n.Bfd.Config.DetectionMultiplier = 3
+	}
+	if n.Bfd.Config.DesiredMinimumTxInterval == 0 {
+		n.Bfd.Config.DesiredMinimumTxInterval = 1000000 // 1s in microseconds
+	}
+	if n.Bfd.Config.RequiredMinimumReceive == 0 {
+		n.Bfd.Config.RequiredMinimumReceive = 1000000 // 1s in microseconds
+	}
+	return nil
+}
+
+// SetPeerGroupStateValues fills State fields required for table.NewPeerGroupInfo.
+func SetPeerGroupStateValues(pg *PeerGroup, g *Global) error {
+	if pg.Config.LocalAs == 0 {
+		pg.Config.LocalAs = getLocalAsForPeer(g, pg.Config.PeerAs)
+	}
+	pg.State.LocalAs = pg.Config.LocalAs
+	pg.State.PeerAs = pg.Config.PeerAs
+
+	pg.Config.PeerType = getConfigPeerType(pg.Config.PeerAs, pg.Config.LocalAs)
+	pg.State.PeerType = pg.Config.PeerType
+
+	if pg.RouteReflector.Config.RouteReflectorClient {
+		clusterId, err := getConfigClusterId(g, pg.RouteReflector.Config.RouteReflectorClusterId)
+		if err != nil {
+			return err
+		}
+		pg.RouteReflector.State.RouteReflectorClusterId = clusterId
 	}
 
 	return nil
+}
+
+func getLocalAsForPeer(g *Global, peerAs uint32) uint32 {
+	if g.Confederation.Config.Enabled && !g.IsConfederation(peerAs) {
+		return g.Confederation.Config.Identifier
+	}
+	return g.Config.As
+}
+
+func getConfigPeerType(peerAs, localAs uint32) PeerType {
+	if peerAs != localAs {
+		return PEER_TYPE_EXTERNAL
+	}
+	return PEER_TYPE_INTERNAL
+}
+
+func getConfigClusterId(g *Global, configClusterId netip.Addr) (netip.Addr, error) {
+	if !configClusterId.IsValid() {
+		return g.Config.RouterId, nil
+	}
+	if !configClusterId.Is4() {
+		return netip.Addr{}, fmt.Errorf("route-reflector-cluster-id should be specified as IPv4 address")
+	}
+	return configClusterId, nil
 }
 
 func SetDefaultGlobalConfigValues(g *Global) error {
@@ -278,7 +321,7 @@ func SetDefaultGlobalConfigValues(g *Global) error {
 	}
 
 	if len(g.Config.LocalAddressList) == 0 {
-		g.Config.LocalAddressList = []string{"0.0.0.0", "::"}
+		g.Config.LocalAddressList = []netip.Addr{netip.IPv4Unspecified(), netip.IPv6Unspecified()}
 	}
 	return nil
 }
@@ -485,7 +528,7 @@ func setDefaultConfigValuesWithViper(v *viper.Viper, b *BgpConfigSet) error {
 func OverwriteNeighborConfigWithPeerGroup(c *Neighbor, pg *PeerGroup) error {
 	v := viper.New()
 
-	val, ok := configuredFields[c.Config.NeighborAddress]
+	val, ok := configuredFields[c.Config.NeighborAddress.String()]
 	if ok {
 		v.Set("neighbor", val)
 	} else {
@@ -495,6 +538,7 @@ func OverwriteNeighborConfigWithPeerGroup(c *Neighbor, pg *PeerGroup) error {
 	overwriteConfig(&c.Config, &pg.Config, "neighbor.config", v)
 	overwriteConfig(&c.Timers.Config, &pg.Timers.Config, "neighbor.timers.config", v)
 	overwriteConfig(&c.Transport.Config, &pg.Transport.Config, "neighbor.transport.config", v)
+	overwriteConfig(&c.TcpAo.Config, &pg.TcpAo.Config, "neighbor.tcp-ao.config", v)
 	overwriteConfig(&c.ErrorHandling.Config, &pg.ErrorHandling.Config, "neighbor.error-handling.config", v)
 	overwriteConfig(&c.LoggingOptions.Config, &pg.LoggingOptions.Config, "neighbor.logging-options.config", v)
 	overwriteConfig(&c.EbgpMultihop.Config, &pg.EbgpMultihop.Config, "neighbor.ebgp-multihop.config", v)
@@ -506,6 +550,7 @@ func OverwriteNeighborConfigWithPeerGroup(c *Neighbor, pg *PeerGroup) error {
 	overwriteConfig(&c.UseMultiplePaths.Config, &pg.UseMultiplePaths.Config, "neighbor.use-multiple-paths.config", v)
 	overwriteConfig(&c.RouteServer.Config, &pg.RouteServer.Config, "neighbor.route-server.config", v)
 	overwriteConfig(&c.TtlSecurity.Config, &pg.TtlSecurity.Config, "neighbor.ttl-security.config", v)
+	overwriteConfig(&c.Bfd.Config, &pg.Bfd.Config, "neighbor.bfd.config", v)
 
 	if !v.IsSet("neighbor.afi-safis") {
 		c.AfiSafis = append([]AfiSafi{}, pg.AfiSafis...)
@@ -514,24 +559,20 @@ func OverwriteNeighborConfigWithPeerGroup(c *Neighbor, pg *PeerGroup) error {
 	return nil
 }
 
-func overwriteConfig(c, pg interface{}, tagPrefix string, v *viper.Viper) {
+func overwriteConfig(c, pg any, tagPrefix string, v *viper.Viper) {
 	nValue := reflect.Indirect(reflect.ValueOf(c))
-	nType := reflect.Indirect(nValue).Type()
 	pgValue := reflect.Indirect(reflect.ValueOf(pg))
 	pgType := reflect.Indirect(pgValue).Type()
 
-	for i := 0; i < pgType.NumField(); i++ {
+	for i := range pgType.NumField() {
 		field := pgType.Field(i).Name
-		tag := tagPrefix + "." + nType.Field(i).Tag.Get("mapstructure")
+		tag := tagPrefix + "." + pgType.Field(i).Tag.Get("mapstructure")
 		if func() bool {
-			for _, t := range forcedOverwrittenConfig {
-				if t == tag {
-					return true
-				}
-			}
-			return false
+			return slices.Contains(forcedOverwrittenConfig, tag)
 		}() || !v.IsSet(tag) {
-			nValue.FieldByName(field).Set(pgValue.FieldByName(field))
+			if nField := nValue.FieldByName(field); nField.IsValid() {
+				nField.Set(pgValue.FieldByName(field))
+			}
 		}
 	}
 }

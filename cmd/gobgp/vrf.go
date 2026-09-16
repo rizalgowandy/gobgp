@@ -24,11 +24,10 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	apb "google.golang.org/protobuf/types/known/anypb"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/apiutil"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 )
 
 func getVrfs() ([]*api.Vrf, error) {
@@ -78,7 +77,7 @@ func showVrfs() error {
 		}
 		rdStr := rd.String()
 
-		f := func(rts []*apb.Any) (string, error) {
+		f := func(rts []*api.RouteTarget) (string, error) {
 			ret := make([]string, 0, len(rts))
 			for _, an := range rts {
 				rt, err := apiutil.UnmarshalRT(an)
@@ -105,7 +104,6 @@ func showVrfs() error {
 				maxLens[i] = v + 4
 			}
 		}
-
 	}
 	format := fmt.Sprintf("  %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds\n", maxLens[0], maxLens[1], maxLens[2], maxLens[3], maxLens[4])
 	fmt.Printf(format, "Name", "RD", "Import RT", "Export RT", "ID")
@@ -125,9 +123,10 @@ func modVrf(typ string, args []string) error {
 		a, err := extractReserved(args, map[string]int{
 			"rd": paramSingle,
 			"rt": paramList,
-			"id": paramSingle})
+			"id": paramSingle,
+		})
 		if err != nil || len(a[""]) != 1 || len(a["rd"]) != 1 || len(a["rt"]) < 2 {
-			//lint:ignore ST1005 cli example
+			//nolint:staticcheck // cli example
 			return fmt.Errorf("usage: gobgp vrf add <vrf name> [ id <id> ] rd <rd> rt { import | export | both } <rt>...")
 		}
 		name := a[""][0]
@@ -157,7 +156,7 @@ func modVrf(typ string, args []string) error {
 				importRt = append(importRt, rt)
 				exportRt = append(exportRt, rt)
 			default:
-				//lint:ignore ST1005 cli example
+				//nolint:staticcheck // cli example
 				return fmt.Errorf("usage: gobgp vrf add <vrf name> [ id <id> ] rd <rd> rt { import | export | both } <rt>...")
 			}
 		}
@@ -168,9 +167,18 @@ func modVrf(typ string, args []string) error {
 				return err
 			}
 		}
-		v, _ := apiutil.MarshalRD(rd)
-		irt, _ := apiutil.MarshalRTs(importRt)
-		ert, _ := apiutil.MarshalRTs(exportRt)
+		v, err := apiutil.MarshalRD(rd)
+		if err != nil {
+			return err
+		}
+		irt, err := apiutil.MarshalRTs(importRt)
+		if err != nil {
+			return err
+		}
+		ert, err := apiutil.MarshalRTs(exportRt)
+		if err != nil {
+			return err
+		}
 
 		_, err = client.AddVrf(ctx, &api.AddVrfRequest{
 			Vrf: &api.Vrf{

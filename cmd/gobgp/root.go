@@ -21,7 +21,7 @@ import (
 	_ "net/http/pprof"
 	"strconv"
 
-	api "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v4/api"
 	"github.com/spf13/cobra"
 )
 
@@ -42,13 +42,14 @@ var globalOpts struct {
 }
 
 var (
-	client api.GobgpApiClient
+	client api.GoBgpServiceClient
 	ctx    context.Context
 )
 
 func newRootCmd() *cobra.Command {
 	cobra.EnablePrefixMatching = true
-	var cancel context.CancelFunc
+	cleanup := func() {}
+
 	rootCmd := &cobra.Command{
 		Use: "gobgp",
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
@@ -62,33 +63,34 @@ func newRootCmd() *cobra.Command {
 			}
 
 			if !globalOpts.GenCmpl {
-				var err error
-				ctx = context.Background()
-				client, cancel, err = newClient(ctx)
+				conn, err := newConn()
 				if err != nil {
-					cancel()
 					exitWithError(err)
+				}
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(context.Background())
+				client = api.NewGoBgpServiceClient(conn)
+				cleanup = func() {
+					conn.Close()
+					cancel()
 				}
 			}
 		},
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
 			if globalOpts.GenCmpl {
-				cmd.GenBashCompletionFile(globalOpts.BashCmplFile)
-			} else {
-				cmd.HelpFunc()(cmd, args)
+				return cmd.GenBashCompletionFile(globalOpts.BashCmplFile)
 			}
+			cmd.HelpFunc()(cmd, args)
+			return nil
 		},
 		PersistentPostRun: func(cmd *cobra.Command, args []string) {
-			// if children declare their own, cancel is not called. Doesn't matter because the command will exit soon.
-			if cancel != nil {
-				cancel()
-			}
+			defer cleanup()
 		},
 	}
 
 	rootCmd.PersistentFlags().StringVarP(&globalOpts.Host, "host", "u", "127.0.0.1", "host")
 	rootCmd.PersistentFlags().IntVarP(&globalOpts.Port, "port", "p", 50051, "port")
-	rootCmd.PersistentFlags().StringVarP(&globalOpts.Target, "target", "", "", "alternative to host/port when using UDS. Ex: unix:///var/run/go-bgp.sock if running gobgpd with a UDS socket.")
+	rootCmd.PersistentFlags().StringVarP(&globalOpts.Target, "target", "", "", "alternative to host/port when using UDS. Examples: unix:///var/run/go-bgp.sock (absolute path) or unix:tmp/go-bgp.sock (relative to current directory).")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Json, "json", "j", false, "use json format to output format")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Debug, "debug", "d", false, "use debug")
 	rootCmd.PersistentFlags().BoolVarP(&globalOpts.Quiet, "quiet", "q", false, "use quiet")

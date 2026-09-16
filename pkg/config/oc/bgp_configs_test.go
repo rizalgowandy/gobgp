@@ -17,24 +17,24 @@ package oc
 
 import (
 	"bufio"
+	"net/netip"
 	"os"
 	"path"
 	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestEqual(t *testing.T) {
 	assert := assert.New(t)
 	p1 := Prefix{
-		IpPrefix:        "192.168.0.0",
+		IpPrefix:        netip.MustParsePrefix("192.168.0.0/24"),
 		MasklengthRange: "24..32",
 	}
 	p2 := Prefix{
-		IpPrefix:        "192.168.0.0",
+		IpPrefix:        netip.MustParsePrefix("192.168.0.0/24"),
 		MasklengthRange: "24..32",
 	}
 	assert.True(p1.Equal(&p2))
@@ -42,11 +42,11 @@ func TestEqual(t *testing.T) {
 	var p3 *Prefix
 	assert.False(p3.Equal(&p1))
 	p3 = &Prefix{
-		IpPrefix:        "192.168.0.0",
+		IpPrefix:        netip.MustParsePrefix("192.168.0.0/24"),
 		MasklengthRange: "24..32",
 	}
 	assert.True(p3.Equal(&p1))
-	p3.IpPrefix = "10.10.0.0"
+	p3.IpPrefix = netip.MustParsePrefix("10.10.0.0/24")
 	assert.False(p3.Equal(&p1))
 	ps1 := PrefixSet{
 		PrefixSetName: "ps",
@@ -61,36 +61,50 @@ func TestEqual(t *testing.T) {
 	assert.False(ps1.Equal(&ps2))
 }
 
-func extractTomlFromMarkdown(fileMd string, fileToml string) error {
+func extractTomlFromMarkdown(fileMd string) (string, error) {
 	fMd, err := os.Open(fileMd)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer fMd.Close()
 
-	fToml, err := os.Create(fileToml)
-	if err != nil {
-		return err
-	}
-	defer fToml.Close()
+	var tomlString strings.Builder
 
 	isBody := false
 	scanner := bufio.NewScanner(fMd)
-	fTomlWriter := bufio.NewWriter(fToml)
+
 	for scanner.Scan() {
 		if curText := scanner.Text(); strings.HasPrefix(curText, "```toml") {
 			isBody = true
 		} else if strings.HasPrefix(curText, "```") {
 			isBody = false
 		} else if isBody {
-			if _, err := fTomlWriter.WriteString(curText + "\n"); err != nil {
-				return err
+			if _, err := tomlString.WriteString(curText); err != nil {
+				return "", err
+			}
+			if _, err := tomlString.WriteString("\n"); err != nil {
+				return "", err
 			}
 		}
 	}
 
-	fTomlWriter.Flush()
-	return scanner.Err()
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+
+	return tomlString.String(), nil
+}
+
+func saveTomlToFile(fileToml string, tomlString string) error {
+	fToml, err := os.Create(fileToml)
+	if err != nil {
+		return err
+	}
+	defer fToml.Close()
+
+	_, err = fToml.WriteString(tomlString)
+
+	return err
 }
 
 func TestConfigExample(t *testing.T) {
@@ -99,17 +113,15 @@ func TestConfigExample(t *testing.T) {
 	_, f, _, _ := runtime.Caller(0)
 	fileMd := path.Join(path.Dir(f), "../../../docs/sources/configuration.md")
 	fileToml := "/tmp/gobgpd.example.toml"
-	assert.NoError(extractTomlFromMarkdown(fileMd, fileToml))
+
+	tomlString, err := extractTomlFromMarkdown(fileMd)
+	assert.NoError(err)
+
+	assert.NoError(saveTomlToFile(fileToml, tomlString))
 	defer os.Remove(fileToml)
 
-	format := detectConfigFileType(fileToml, "")
-	c := &BgpConfigSet{}
-	v := viper.New()
-	v.SetConfigFile(fileToml)
-	v.SetConfigType(format)
-	assert.NoError(v.ReadInConfig())
-	assert.NoError(v.UnmarshalExact(c))
-	assert.NoError(setDefaultConfigValuesWithViper(v, c))
+	c, err := ReadConfigfile(fileToml, "")
+	assert.NoError(err)
 
 	// Test if we can set the parameters for a peer-group
 	for _, peerGroup := range c.PeerGroups {
@@ -128,4 +140,26 @@ func TestConfigExample(t *testing.T) {
 
 		assert.True(neighbor.Config.SendSoftwareVersion)
 	}
+}
+
+func TestConfigError(t *testing.T) {
+	assert := assert.New(t)
+
+	_, f, _, _ := runtime.Caller(0)
+	fileMd := path.Join(path.Dir(f), "../../../docs/sources/configuration.md")
+	fileToml := "/tmp/gobgpd.example.toml"
+
+	tomlString, err := extractTomlFromMarkdown(fileMd)
+	assert.NoError(err)
+
+	invlalidToml := strings.Replace(tomlString, "port = 1790", "port-OOPS = 1790", 1)
+
+	assert.NoError(saveTomlToFile(fileToml, invlalidToml))
+	defer os.Remove(fileToml)
+
+	_, err = ReadConfigfile(fileToml, "")
+	assert.Error(err)
+
+	expectedErr := "decoding failed due to the following error(s):\n\n'global.config' has invalid keys: port-oops"
+	assert.Equal(err.Error(), expectedErr)
 }

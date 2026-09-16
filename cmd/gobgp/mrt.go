@@ -20,6 +20,7 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -27,10 +28,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/apiutil"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
-	"github.com/osrg/gobgp/v3/pkg/packet/mrt"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/apiutil"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/mrt"
 )
 
 func injectMrt() error {
@@ -57,6 +58,10 @@ func injectMrt() error {
 		fmt.Println("You should probably specify either --no-ipv4 or --no-ipv6 when overwriting nexthop, unless your dump contains only one type of routes")
 	}
 
+	if mrtOpts.Best && mrtOpts.PeerASN != 0 {
+		fmt.Println("--only-best has no effect when --peer-asn is specified")
+	}
+
 	var idx int64
 	if mrtOpts.QueueSize < 1 {
 		return fmt.Errorf("specified queue size is smaller than 1, refusing to run with unbounded memory usage")
@@ -64,7 +69,6 @@ func injectMrt() error {
 
 	ch := make(chan []*api.Path, mrtOpts.QueueSize)
 	go func() {
-
 		var peers []*mrt.Peer
 		for {
 			buf := make([]byte, mrt.MRT_COMMON_HEADER_LEN)
@@ -75,10 +79,9 @@ func injectMrt() error {
 				exitWithError(fmt.Errorf("failed to read: %s", err))
 			}
 
-			h := &mrt.MRTHeader{}
-			err = h.DecodeFromBytes(buf)
+			h, err := mrt.ParseHeader(buf)
 			if err != nil {
-				exitWithError(fmt.Errorf("failed to parse"))
+				exitWithError(fmt.Errorf("failed to parse: %s", err))
 			}
 
 			buf = make([]byte, h.Len)
@@ -87,7 +90,7 @@ func injectMrt() error {
 				exitWithError(fmt.Errorf("failed to read"))
 			}
 
-			msg, err := mrt.ParseMRTBody(h, buf)
+			msg, err := mrt.ParseBody(buf, h)
 			if err != nil {
 				printError(fmt.Errorf("failed to parse: %s", err))
 				continue
@@ -130,7 +133,11 @@ func injectMrt() error {
 					if len(peers) <= int(e.PeerIndex) {
 						exitWithError(fmt.Errorf("invalid peer index: %d (PEER_INDEX_TABLE has only %d peers)", e.PeerIndex, len(peers)))
 					}
-					//t := time.Unix(int64(e.OriginatedTime), 0)
+					// t := time.Unix(int64(e.OriginatedTime), 0)
+
+					if mrtOpts.PeerASN != 0 && peers[e.PeerIndex].AS != mrtOpts.PeerASN {
+						continue
+					}
 
 					var attrs []bgp.PathAttributeInterface
 					switch subType {
@@ -138,7 +145,7 @@ func injectMrt() error {
 						if mrtOpts.NextHop != nil {
 							for i, attr := range e.PathAttributes {
 								if attr.GetType() == bgp.BGP_ATTR_TYPE_NEXT_HOP {
-									e.PathAttributes[i] = bgp.NewPathAttributeNextHop(mrtOpts.NextHop.String())
+									e.PathAttributes[i], _ = bgp.NewPathAttributeNextHop(netip.MustParseAddr(mrtOpts.NextHop.String()))
 									break
 								}
 							}
@@ -151,16 +158,17 @@ func injectMrt() error {
 								attrs = append(attrs, attr)
 							} else {
 								a := attr.(*bgp.PathAttributeMpReachNLRI)
-								nexthop := a.Nexthop.String()
+								nexthop := a.Nexthop
 								if mrtOpts.NextHop != nil {
-									nexthop = mrtOpts.NextHop.String()
+									nexthop = netip.MustParseAddr(mrtOpts.NextHop.String())
 								}
-								attrs = append(attrs, bgp.NewPathAttributeMpReachNLRI(nexthop, []bgp.AddrPrefixInterface{nlri}))
+								attr, _ := bgp.NewPathAttributeMpReachNLRI(rib.Family, []bgp.PathNLRI{{NLRI: nlri}}, nexthop)
+								attrs = append(attrs, attr)
 							}
 						}
 					}
 
-					path, _ := apiutil.NewPath(nlri, false, attrs, time.Unix(int64(e.OriginatedTime), 0))
+					path, _ := apiutil.NewPath(rib.Family, nlri, false, attrs, time.Unix(int64(e.OriginatedTime), 0))
 					path.SourceAsn = peers[e.PeerIndex].AS
 					path.SourceId = peers[e.PeerIndex].BgpId.String()
 
@@ -169,7 +177,7 @@ func injectMrt() error {
 				}
 
 				// TODO: calculate properly if necessary.
-				if mrtOpts.Best {
+				if mrtOpts.Best && len(paths) > 0 {
 					paths = []*api.Path{paths[0]}
 				}
 
@@ -194,13 +202,19 @@ func injectMrt() error {
 
 	for paths := range ch {
 		err = stream.Send(&api.AddPathStreamRequest{
-			TableType: api.TableType_GLOBAL,
+			TableType: api.TableType_TABLE_TYPE_GLOBAL,
 			Paths:     paths,
 		})
 		if err != nil {
 			return fmt.Errorf("failed to send: %s", err)
 		}
 	}
+
+	_, err = stream.CloseAndRecv()
+	if err != nil {
+		return fmt.Errorf("failed to close stream: %s", err)
+	}
+
 	return nil
 }
 
@@ -250,5 +264,6 @@ func newMrtCmd() *cobra.Command {
 	mrtCmd.PersistentFlags().BoolVarP(&mrtOpts.SkipV6, "no-ipv6", "", false, "Do not import IPv6 routes")
 	mrtCmd.PersistentFlags().IntVarP(&mrtOpts.QueueSize, "queue-size", "", 1<<10, "Maximum number of updates to keep queued")
 	mrtCmd.PersistentFlags().IPVarP(&mrtOpts.NextHop, "nexthop", "", nil, "Overwrite nexthop")
+	mrtCmd.PersistentFlags().Uint32VarP(&mrtOpts.PeerASN, "peer-asn", "", 0, "Inject prefixes only from specified AS number")
 	return mrtCmd
 }

@@ -19,10 +19,9 @@ import (
 	"testing"
 
 	"google.golang.org/protobuf/proto"
-	apb "google.golang.org/protobuf/types/known/anypb"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -36,10 +35,9 @@ func Test_MultiProtocolCapability(t *testing.T) {
 		},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_MultiProtocol{MultiProtocol: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 	c := n.(*bgp.CapMultiProtocol)
 	assert.Equal(bgp.RF_IPv4_UC, c.CapValue)
 
@@ -52,10 +50,9 @@ func Test_RouteRefreshCapability(t *testing.T) {
 
 	input := &api.RouteRefreshCapability{}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_RouteRefresh{RouteRefresh: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	output := NewRouteRefreshCapability(n.(*bgp.CapRouteRefresh))
 	assert.True(proto.Equal(input, output))
@@ -66,10 +63,9 @@ func Test_CarryingLabelInfoCapability(t *testing.T) {
 
 	input := &api.CarryingLabelInfoCapability{}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_CarryingLabelInfo{CarryingLabelInfo: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	output := NewCarryingLabelInfoCapability(n.(*bgp.CapCarryingLabelInfo))
 	assert.True(proto.Equal(input, output))
@@ -93,10 +89,9 @@ func Test_ExtendedNexthopCapability(t *testing.T) {
 		},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_ExtendedNexthop{ExtendedNexthop: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 	c := n.(*bgp.CapExtendedNexthop)
 	assert.Equal(1, len(c.Tuples))
 	assert.Equal(uint16(bgp.AFI_IP), c.Tuples[0].NLRIAFI)
@@ -124,10 +119,9 @@ func Test_GracefulRestartCapability(t *testing.T) {
 		},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_GracefulRestart{GracefulRestart: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	c := n.(*bgp.CapGracefulRestart)
 	assert.Equal(1, len(c.Tuples))
@@ -148,10 +142,9 @@ func Test_FourOctetASNumberCapability(t *testing.T) {
 		Asn: 100,
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_FourOctetAsn{FourOctetAsn: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	c := n.(*bgp.CapFourOctetASNumber)
 	assert.Equal(uint32(100), c.CapValue)
@@ -170,19 +163,18 @@ func Test_AddPathCapability(t *testing.T) {
 					Afi:  api.Family_AFI_IP,
 					Safi: api.Family_SAFI_UNICAST,
 				},
-				Mode: api.AddPathCapabilityTuple_BOTH,
+				Mode: api.AddPathCapabilityTuple_MODE_BOTH,
 			},
 		},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_AddPath{AddPath: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	c := n.(*bgp.CapAddPath)
 	assert.Equal(1, len(c.Tuples))
-	assert.Equal(bgp.RF_IPv4_UC, c.Tuples[0].RouteFamily)
+	assert.Equal(bgp.RF_IPv4_UC, c.Tuples[0].Family)
 	assert.Equal(bgp.BGP_ADD_PATH_BOTH, c.Tuples[0].Mode)
 
 	output := NewAddPathCapability(c)
@@ -194,10 +186,9 @@ func Test_EnhancedRouteRefreshCapability(t *testing.T) {
 
 	input := &api.EnhancedRouteRefreshCapability{}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_EnhancedRouteRefresh{EnhancedRouteRefresh: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	output := NewEnhancedRouteRefreshCapability(n.(*bgp.CapEnhancedRouteRefresh))
 	assert.True(proto.Equal(input, output))
@@ -219,10 +210,9 @@ func Test_LongLivedGracefulRestartCapability(t *testing.T) {
 		},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_LongLivedGracefulRestart{LongLivedGracefulRestart: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	c := n.(*bgp.CapLongLivedGracefulRestart)
 	assert.Equal(1, len(c.Tuples))
@@ -240,10 +230,9 @@ func Test_RouteRefreshCiscoCapability(t *testing.T) {
 
 	input := &api.RouteRefreshCiscoCapability{}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_RouteRefreshCisco{RouteRefreshCisco: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	output := NewRouteRefreshCiscoCapability(n.(*bgp.CapRouteRefreshCisco))
 	assert.True(proto.Equal(input, output))
@@ -257,10 +246,9 @@ func Test_UnknownCapability(t *testing.T) {
 		Value: []byte{0x11, 0x22, 0x33, 0x44},
 	}
 
-	a, err := apb.New(input)
-	assert.Nil(err)
+	a := &api.Capability{Cap: &api.Capability_Unknown{Unknown: input}}
 	n, err := unmarshalCapability(a)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	c := n.(*bgp.CapUnknown)
 	assert.Equal(bgp.BGPCapabilityCode(0xff), c.CapCode)

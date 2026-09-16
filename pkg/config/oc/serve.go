@@ -1,10 +1,13 @@
 package oc
 
 import (
-	"github.com/fsnotify/fsnotify"
-	"github.com/spf13/viper"
+	"io"
+	"log/slog"
+	"os"
 
-	"github.com/osrg/gobgp/v3/pkg/log"
+	"github.com/fsnotify/fsnotify"
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/spf13/viper"
 )
 
 type BgpConfigSet struct {
@@ -16,30 +19,47 @@ type BgpConfigSet struct {
 	Vrfs              []Vrf              `mapstructure:"vrfs"`
 	MrtDump           []Mrt              `mapstructure:"mrt-dump"`
 	Zebra             Zebra              `mapstructure:"zebra"`
-	Collector         Collector          `mapstructure:"collector"`
 	DefinedSets       DefinedSets        `mapstructure:"defined-sets"`
 	PolicyDefinitions []PolicyDefinition `mapstructure:"policy-definitions"`
 	DynamicNeighbors  []DynamicNeighbor  `mapstructure:"dynamic-neighbors"`
+	Keychains         []Keychain         `mapstructure:"keychains"`
 }
 
 func ReadConfigfile(path, format string) (*BgpConfigSet, error) {
 	// Update config file type, if detectable
 	format = detectConfigFileType(path, format)
 
-	config := &BgpConfigSet{}
-	v := viper.New()
-	v.SetConfigFile(path)
-	v.SetConfigType(format)
+	configReader, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() { _ = configReader.Close() }()
+
+	return ReadConfig(configReader, format)
+}
+
+func ReadConfig(r io.Reader, format string) (*BgpConfigSet, error) {
 	var err error
-	if err = v.ReadInConfig(); err != nil {
+
+	config := &BgpConfigSet{}
+	opts := viper.DecodeHook(mapstructure.ComposeDecodeHookFunc(integerRangeHookFunc(), mapstructure.StringToNetIPAddrHookFunc(), mapstructure.StringToNetIPPrefixHookFunc()))
+
+	v := viper.New()
+	v.SetConfigType(format)
+
+	if err = v.ReadConfig(r); err != nil {
 		return nil, err
 	}
-	if err = v.UnmarshalExact(config); err != nil {
+
+	if err = v.UnmarshalExact(config, opts); err != nil {
 		return nil, err
 	}
+
 	if err = setDefaultConfigValuesWithViper(v, config); err != nil {
 		return nil, err
 	}
+
 	return config, nil
 }
 
@@ -62,7 +82,7 @@ func ConfigSetToRoutingPolicy(c *BgpConfigSet) *RoutingPolicy {
 	}
 }
 
-func UpdatePeerGroupConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]PeerGroup, []PeerGroup, []PeerGroup) {
+func UpdatePeerGroupConfig(logger *slog.Logger, curC, newC *BgpConfigSet) ([]PeerGroup, []PeerGroup, []PeerGroup) {
 	addedPg := []PeerGroup{}
 	deletedPg := []PeerGroup{}
 	updatedPg := []PeerGroup{}
@@ -71,14 +91,7 @@ func UpdatePeerGroupConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]PeerG
 		if idx := existPeerGroup(n.Config.PeerGroupName, curC.PeerGroups); idx < 0 {
 			addedPg = append(addedPg, n)
 		} else if !n.Equal(&curC.PeerGroups[idx]) {
-			logger.Debug("Current peer-group config",
-				log.Fields{
-					"Topic": "Config",
-					"Key":   curC.PeerGroups[idx]})
-			logger.Debug("New peer-group config",
-				log.Fields{
-					"Topic": "Config",
-					"Key":   n})
+			logger.Debug("Current peer-group config", slog.String("Topic", "Config"), slog.Any("Key", n))
 			updatedPg = append(updatedPg, n)
 		}
 	}
@@ -91,7 +104,7 @@ func UpdatePeerGroupConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]PeerG
 	return addedPg, deletedPg, updatedPg
 }
 
-func UpdateNeighborConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]Neighbor, []Neighbor, []Neighbor) {
+func UpdateNeighborConfig(logger *slog.Logger, curC, newC *BgpConfigSet) ([]Neighbor, []Neighbor, []Neighbor) {
 	added := []Neighbor{}
 	deleted := []Neighbor{}
 	updated := []Neighbor{}
@@ -100,14 +113,8 @@ func UpdateNeighborConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]Neighb
 		if idx := inSlice(n, curC.Neighbors); idx < 0 {
 			added = append(added, n)
 		} else if !n.Equal(&curC.Neighbors[idx]) {
-			logger.Debug("Current neighbor config",
-				log.Fields{
-					"Topic": "Config",
-					"Key":   curC.Neighbors[idx]})
-			logger.Debug("New neighbor config",
-				log.Fields{
-					"Topic": "Config",
-					"Key":   n})
+			logger.Debug("Current neighbor config", slog.String("Topic", "Config"), slog.Any("Key", curC.Neighbors[idx]))
+			logger.Debug("New neighbor config", slog.String("Topic", "Config"), slog.Any("Key", n))
 			updated = append(updated, n)
 		}
 	}
@@ -120,15 +127,9 @@ func UpdateNeighborConfig(logger log.Logger, curC, newC *BgpConfigSet) ([]Neighb
 	return added, deleted, updated
 }
 
-func CheckPolicyDifference(logger log.Logger, currentPolicy *RoutingPolicy, newPolicy *RoutingPolicy) bool {
-	logger.Debug("Current policy",
-		log.Fields{
-			"Topic": "Config",
-			"Key":   currentPolicy})
-	logger.Debug("New policy",
-		log.Fields{
-			"Topic": "Config",
-			"Key":   newPolicy})
+func CheckPolicyDifference(logger *slog.Logger, currentPolicy *RoutingPolicy, newPolicy *RoutingPolicy) bool {
+	logger.Debug("Current policy", slog.String("Topic", "Config"), slog.Any("Key", currentPolicy))
+	logger.Debug("New policy", slog.String("Topic", "Config"), slog.Any("Key", newPolicy))
 
 	var result bool
 	if currentPolicy == nil && newPolicy == nil {

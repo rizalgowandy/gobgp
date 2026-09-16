@@ -3,6 +3,7 @@ package bgp
 import (
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,14 +15,16 @@ func bgpupdate() *BGPMessage {
 		NewAsPathParam(2, []uint16{65001}),
 	}
 
+	panh, _ := NewPathAttributeNextHop(netip.MustParseAddr("192.168.1.1"))
 	p := []PathAttributeInterface{
 		NewPathAttributeOrigin(1),
 		NewPathAttributeAsPath(aspath),
-		NewPathAttributeNextHop("192.168.1.1"),
+		panh,
 	}
 
-	n := []*IPAddrPrefix{NewIPAddrPrefix(24, "10.10.10.0")}
-	return NewBGPUpdateMessage(nil, p, n)
+	prefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.10.10.0/24"))
+	n := []*IPAddrPrefix{prefix}
+	return NewBGPUpdateMessage(nil, p, []PathNLRI{{NLRI: n[0]}})
 }
 
 func bgpupdateV6() *BGPMessage {
@@ -29,25 +32,26 @@ func bgpupdateV6() *BGPMessage {
 		NewAsPathParam(2, []uint16{65001}),
 	}
 
-	prefixes := []AddrPrefixInterface{NewIPv6AddrPrefix(100,
-		"fe80:1234:1234:5667:8967:af12:8912:1023")}
+	nlri, _ := NewIPAddrPrefix(netip.MustParsePrefix("fe80:1234:1234:5667:8967:af12:8912:1023/100"))
+	prefixes := []NLRI{nlri}
 
 	p := []PathAttributeInterface{
 		NewPathAttributeOrigin(1),
 		NewPathAttributeAsPath(aspath),
-		NewPathAttributeMpReachNLRI("1023::", prefixes),
 	}
+	mpreach, _ := NewPathAttributeMpReachNLRI(RF_IPv6_UC, []PathNLRI{{NLRI: prefixes[0]}}, netip.MustParseAddr("1023::"))
+	p = append(p, mpreach)
 	return NewBGPUpdateMessage(nil, p, nil)
 }
 
 func Test_Validate_CapV4(t *testing.T) {
 	assert := assert.New(t)
 	message := bgpupdate().Body.(*BGPUpdate)
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv6_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv6_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	require.NoError(t, err)
 	assert.Equal(true, res)
 }
@@ -55,11 +59,11 @@ func Test_Validate_CapV4(t *testing.T) {
 func Test_Validate_CapV6(t *testing.T) {
 	assert := assert.New(t)
 	message := bgpupdateV6().Body.(*BGPUpdate)
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv6_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv6_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.NoError(err)
 	assert.True(res)
 
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Error(err)
 	assert.False(res)
 }
@@ -67,10 +71,9 @@ func Test_Validate_CapV6(t *testing.T) {
 func Test_Validate_OK(t *testing.T) {
 	assert := assert.New(t)
 	message := bgpupdate().Body.(*BGPUpdate)
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(true, res)
 	assert.NoError(err)
-
 }
 
 // func Test_Validate_wellknown_but_nontransitive(t *testing.T) {
@@ -82,7 +85,7 @@ func Test_Validate_OK(t *testing.T) {
 // 	origin.DecodeFromBytes(originBytes)
 // 	message.PathAttributes[0] = origin
 
-// 	res, err := ValidateUpdateMsg(message, []RouteFamily{RF_IPv4_UC,})
+// 	res, err := ValidateUpdateMsg(message, []Family{RF_IPv4_UC,})
 // 	assert.Equal(false, res)
 // 	assert.Error(err)
 // 	e := err.(*MessageError)
@@ -100,7 +103,7 @@ func Test_Validate_OK(t *testing.T) {
 // 	origin.DecodeFromBytes(originBytes)
 // 	message.PathAttributes[0] = origin
 
-// 	res, err := ValidateUpdateMsg(message, []RouteFamily{RF_IPv4_UC,})
+// 	res, err := ValidateUpdateMsg(message, []Family{RF_IPv4_UC,})
 // 	assert.Equal(false, res)
 // 	assert.Error(err)
 // 	e := err.(*MessageError)
@@ -118,7 +121,7 @@ func Test_Validate_OK(t *testing.T) {
 // 	origin.DecodeFromBytes(originBytes)
 // 	message.PathAttributes[0] = origin
 
-// 	res, err := ValidateUpdateMsg(message, []RouteFamily{RF_IPv4_UC,})
+// 	res, err := ValidateUpdateMsg(message, []Family{RF_IPv4_UC,})
 // 	assert.Equal(false, res)
 // 	assert.Error(err)
 // 	e := err.(*MessageError)
@@ -137,7 +140,7 @@ func Test_Validate_OK(t *testing.T) {
 // 	origin.DecodeFromBytes(originBytes)
 // 	message.PathAttributes[0] = origin
 
-// 	res, err := ValidateUpdateMsg(message, []RouteFamily{RF_IPv4_UC,})
+// 	res, err := ValidateUpdateMsg(message, []Family{RF_IPv4_UC,})
 // 	assert.Equal(false, res)
 // 	assert.Error(err)
 // 	e := err.(*MessageError)
@@ -152,10 +155,10 @@ func Test_Validate_duplicate_attribute(t *testing.T) {
 	// duplicate origin path attribute
 	originBytes := []byte{byte(PathAttrFlags[BGP_ATTR_TYPE_ORIGIN]), 1, 1, 1}
 	origin := &PathAttributeOrigin{}
-	origin.DecodeFromBytes(originBytes)
+	assert.NoError(origin.DecodeFromBytes(originBytes))
 	message.PathAttributes = append(message.PathAttributes, origin)
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e := err.(*MessageError)
@@ -169,7 +172,7 @@ func Test_Validate_mandatory_missing(t *testing.T) {
 	assert := assert.New(t)
 	message := bgpupdate().Body.(*BGPUpdate)
 	message.PathAttributes = message.PathAttributes[1:]
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e := err.(*MessageError)
@@ -186,9 +189,9 @@ func Test_Validate_mandatory_missing_nocheck(t *testing.T) {
 	message.PathAttributes = message.PathAttributes[1:]
 	message.NLRI = nil
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
-	assert.Equal(true, res)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.NoError(err)
+	assert.Equal(true, res)
 }
 
 func Test_Validate_invalid_origin(t *testing.T) {
@@ -197,12 +200,12 @@ func Test_Validate_invalid_origin(t *testing.T) {
 	// origin needs to be well-known
 	originBytes := []byte{byte(PathAttrFlags[BGP_ATTR_TYPE_ORIGIN]), 1, 1, 5}
 	origin := &PathAttributeOrigin{}
-	origin.DecodeFromBytes(originBytes)
+	assert.NoError(origin.DecodeFromBytes(originBytes))
 	message.PathAttributes[0] = origin
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
-	assert.Equal(false, res)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Error(err)
+	assert.Equal(false, res)
 	e := err.(*MessageError)
 	assert.Equal(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), e.TypeCode)
 	assert.Equal(uint8(BGP_ERROR_SUB_INVALID_ORIGIN_ATTRIBUTE), e.SubTypeCode)
@@ -219,12 +222,12 @@ func Test_Validate_invalid_nexthop_zero(t *testing.T) {
 	nexthopBytes := []byte{byte(PathAttrFlags[BGP_ATTR_TYPE_NEXT_HOP]), 3, 4}
 	nexthopBytes = append(nexthopBytes, addr...)
 	nexthop := &PathAttributeNextHop{}
-	nexthop.DecodeFromBytes(nexthopBytes)
+	assert.NoError(nexthop.DecodeFromBytes(nexthopBytes))
 	message.PathAttributes[2] = nexthop
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
-	assert.Equal(false, res)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Error(err)
+	assert.Equal(false, res)
 	e := err.(*MessageError)
 	assert.Equal(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), e.TypeCode)
 	assert.Equal(uint8(BGP_ERROR_SUB_INVALID_NEXT_HOP_ATTRIBUTE), e.SubTypeCode)
@@ -257,21 +260,21 @@ func Test_Validate_invalid_nexthop_lo(t *testing.T) {
 			nexthopBytes := []byte{byte(PathAttrFlags[BGP_ATTR_TYPE_NEXT_HOP]), 3, 4}
 			nexthopBytes = append(nexthopBytes, addr...)
 			nexthop := &PathAttributeNextHop{}
-			nexthop.DecodeFromBytes(nexthopBytes)
+			assert.NoError(nexthop.DecodeFromBytes(nexthopBytes))
 			message.PathAttributes[2] = nexthop
 
-			res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, tt.inLoopbackAllowed)
+			res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, tt.inLoopbackAllowed)
 			if tt.wantErr {
-				assert.Equal(false, res)
 				assert.Error(err)
+				assert.Equal(false, res)
 				e := err.(*MessageError)
 				assert.Equal(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), e.TypeCode)
 				assert.Equal(uint8(BGP_ERROR_SUB_INVALID_NEXT_HOP_ATTRIBUTE), e.SubTypeCode)
 				assert.Equal(ERROR_HANDLING_TREAT_AS_WITHDRAW, e.ErrorHandling)
 				assert.Equal(nexthopBytes, e.Data)
 			} else {
-				assert.Equal(true, res)
 				assert.NoError(err)
+				assert.Equal(true, res)
 			}
 		})
 	}
@@ -286,10 +289,10 @@ func Test_Validate_invalid_nexthop_de(t *testing.T) {
 	nexthopBytes := []byte{byte(PathAttrFlags[BGP_ATTR_TYPE_NEXT_HOP]), 3, 4}
 	nexthopBytes = append(nexthopBytes, addr...)
 	nexthop := &PathAttributeNextHop{}
-	nexthop.DecodeFromBytes(nexthopBytes)
+	assert.NoError(nexthop.DecodeFromBytes(nexthopBytes))
 	message.PathAttributes[2] = nexthop
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e := err.(*MessageError)
@@ -297,20 +300,18 @@ func Test_Validate_invalid_nexthop_de(t *testing.T) {
 	assert.Equal(uint8(BGP_ERROR_SUB_INVALID_NEXT_HOP_ATTRIBUTE), e.SubTypeCode)
 	assert.Equal(ERROR_HANDLING_TREAT_AS_WITHDRAW, e.ErrorHandling)
 	assert.Equal(nexthopBytes, e.Data)
-
 }
 
 func Test_Validate_unrecognized_well_known(t *testing.T) {
-
 	assert := assert.New(t)
 	message := bgpupdate().Body.(*BGPUpdate)
 	f := BGP_ATTR_FLAG_TRANSITIVE
 	unknownBytes := []byte{byte(f), 30, 1, 1}
 	unknown := &PathAttributeUnknown{}
-	unknown.DecodeFromBytes(unknownBytes)
+	assert.NoError(unknown.DecodeFromBytes(unknownBytes))
 	message.PathAttributes = append(message.PathAttributes, unknown)
 
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, false, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e := err.(*MessageError)
@@ -325,7 +326,7 @@ func Test_Validate_aspath(t *testing.T) {
 	message := bgpupdate().Body.(*BGPUpdate)
 
 	// VALID AS_PATH
-	res, err := ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
+	res, err := ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
 	require.NoError(t, err)
 	assert.Equal(true, res)
 
@@ -344,7 +345,7 @@ func Test_Validate_aspath(t *testing.T) {
 	}
 
 	message.PathAttributes = newAttrs
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e := err.(*MessageError)
@@ -353,7 +354,7 @@ func Test_Validate_aspath(t *testing.T) {
 	assert.Equal(ERROR_HANDLING_TREAT_AS_WITHDRAW, e.ErrorHandling)
 	assert.Nil(e.Data)
 
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, true, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, true, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e = err.(*MessageError)
@@ -376,7 +377,7 @@ func Test_Validate_aspath(t *testing.T) {
 	}
 
 	message.PathAttributes = newAttrs
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, false, false)
 	assert.Equal(false, res)
 	assert.Error(err)
 	e = err.(*MessageError)
@@ -385,16 +386,39 @@ func Test_Validate_aspath(t *testing.T) {
 	assert.Equal(ERROR_HANDLING_TREAT_AS_WITHDRAW, e.ErrorHandling)
 	assert.Nil(e.Data)
 
-	res, err = ValidateUpdateMsg(message, map[RouteFamily]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, true, false)
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, true, false)
 	require.NoError(t, err)
 	assert.Equal(true, res)
+
+	// empty AS_PATH for confederation eBGP
+	newAttrs = make([]PathAttributeInterface, 0)
+	attrs = message.PathAttributes
+	for _, attr := range attrs {
+		if _, y := attr.(*PathAttributeAsPath); y {
+			newAttrs = append(newAttrs, NewPathAttributeAsPath([]AsPathParamInterface{}))
+		} else {
+			newAttrs = append(newAttrs, attr)
+		}
+	}
+
+	message.PathAttributes = newAttrs
+	res, err = ValidateUpdateMsg(message, map[Family]BGPAddPathMode{RF_IPv4_UC: BGP_ADD_PATH_BOTH}, true, true, false)
+	assert.Equal(false, res)
+	assert.Error(err)
+	e = err.(*MessageError)
+	assert.Equal(uint8(BGP_ERROR_UPDATE_MESSAGE_ERROR), e.TypeCode)
+	assert.Equal(uint8(BGP_ERROR_SUB_MALFORMED_AS_PATH), e.SubTypeCode)
+	assert.Equal(ERROR_HANDLING_SESSION_RESET, e.ErrorHandling)
+	assert.Nil(e.Data)
 }
 
 func Test_Validate_flowspec(t *testing.T) {
 	assert := assert.New(t)
 	cmp := make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
+	destPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix))
+	srcPrefix, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix))
 	item1 := NewFlowSpecComponentItem(DEC_NUM_OP_EQ, TCP)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_IP_PROTO, []*FlowSpecComponentItem{item1}))
 	item2 := NewFlowSpecComponentItem(DEC_NUM_OP_GT_EQ, 20)
@@ -413,17 +437,19 @@ func Test_Validate_flowspec(t *testing.T) {
 	isFragment := uint64(0x02)
 	item7 := NewFlowSpecComponentItem(BITMASK_FLAG_OP_MATCH, isFragment)
 	cmp = append(cmp, NewFlowSpecComponent(FLOW_SPEC_TYPE_FRAGMENT, []*FlowSpecComponentItem{item7}))
-	n1 := NewFlowSpecIPv4Unicast(cmp)
-	a := NewPathAttributeMpReachNLRI("", []AddrPrefixInterface{n1})
-	m := map[RouteFamily]BGPAddPathMode{RF_FS_IPv4_UC: BGP_ADD_PATH_NONE}
+	n1, _ := NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
+	a, _ := NewPathAttributeMpReachNLRI(RF_FS_IPv4_UC, []PathNLRI{{NLRI: n1}}, netip.IPv4Unspecified())
+	m := map[Family]BGPAddPathMode{RF_FS_IPv4_UC: BGP_ADD_PATH_NONE}
 	_, err := ValidateAttribute(a, m, false, false, false)
-	assert.Nil(err)
+	assert.NoError(err)
 
 	cmp = make([]FlowSpecComponentInterface, 0)
-	cmp = append(cmp, NewFlowSpecSourcePrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	cmp = append(cmp, NewFlowSpecDestinationPrefix(NewIPAddrPrefix(24, "10.0.0.0")))
-	n1 = NewFlowSpecIPv4Unicast(cmp)
-	a = NewPathAttributeMpReachNLRI("", []AddrPrefixInterface{n1})
+	srcPrefix2, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecSourcePrefix(srcPrefix2))
+	destPrefix2, _ := NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	cmp = append(cmp, NewFlowSpecDestinationPrefix(destPrefix2))
+	n1, _ = NewFlowSpecUnicast(RF_FS_IPv4_UC, cmp)
+	a, _ = NewPathAttributeMpReachNLRI(RF_FS_IPv4_UC, []PathNLRI{{NLRI: n1}}, netip.IPv4Unspecified())
 	// Swaps components order to reproduce the rules order violation.
 	n1.Value[0], n1.Value[1] = n1.Value[1], n1.Value[0]
 	_, err = ValidateAttribute(a, m, false, false, false)
@@ -433,20 +459,20 @@ func Test_Validate_flowspec(t *testing.T) {
 func TestValidateLargeCommunities(t *testing.T) {
 	assert := assert.New(t)
 	c1, err := ParseLargeCommunity("10:10:10")
-	assert.Nil(err)
+	assert.NoError(err)
 	c2, err := ParseLargeCommunity("10:10:10")
-	assert.Nil(err)
+	assert.NoError(err)
 	c3, err := ParseLargeCommunity("10:10:20")
-	assert.Nil(err)
+	assert.NoError(err)
 	a := NewPathAttributeLargeCommunities([]*LargeCommunity{c1, c2, c3})
 	assert.True(len(a.Values) == 3)
 	_, err = ValidateAttribute(a, nil, false, false, false)
-	assert.Nil(err)
+	assert.NoError(err)
 	assert.True(len(a.Values) == 2)
 }
 
+//nolint:errcheck
 func FuzzParseLargeCommunity(f *testing.F) {
-
 	f.Fuzz(func(t *testing.T, data string) {
 		ParseLargeCommunity(data)
 	})

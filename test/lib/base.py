@@ -15,18 +15,14 @@
 
 
 import os
+import subprocess
 import time
 import itertools
-
-from invoke import run
 
 import textwrap
 from colored import fg, attr
 
-try:
-    from docker import Client
-except ImportError:
-    from docker import APIClient as Client
+from docker import APIClient as Client
 import netaddr
 
 
@@ -88,7 +84,7 @@ TEST_NETWORK_LABEL = TEST_CONTAINER_LABEL
 def local(s, capture=False):
     print('[localhost] local:', s)
     _env = {'NOSE_NOLOGCAPTURE': '1' if capture else '0'}
-    return run(s, hide=True, env=_env).stdout.strip()
+    return subprocess.check_output(s, shell=True, env=_env).decode('utf-8').strip()
 
 
 def yellow(s):
@@ -389,6 +385,7 @@ class BGPContainer(Container):
         treat_as_withdraw=False,
         remote_as=None,
         mup=False,
+        bind_interface="",
     ):
         neigh_addr = ''
         local_addr = ''
@@ -437,7 +434,8 @@ class BGPContainer(Container):
                             'addpath': addpath,
                             'treat_as_withdraw': treat_as_withdraw,
                             'remote_as': remote_as or peer.asn,
-                            'mup': mup}
+                            'mup': mup,
+                            'bind_interface': bind_interface}
         if self.is_running and reload_config:
             self.create_config()
             self.reload_config()
@@ -588,6 +586,18 @@ class BGPContainer(Container):
     def reload_config(self):
         raise Exception('implement reload_config() method')
 
+    def show_addr(self):
+        cmd = '/sbin/ip addr'
+        res = self.local(cmd, capture=True)
+        print(yellow(res))
+
+    def show_route(self, ipv6=False):
+        if ipv6:
+            cmd = '/sbin/ip -6 route'
+        else:
+            cmd = '/sbin/ip route'
+        res = self.local(cmd, capture=True)
+        print(yellow(res))
 
 class OSPFContainer(Container):
     WAIT_FOR_BOOT = 1

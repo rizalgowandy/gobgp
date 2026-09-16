@@ -25,7 +25,7 @@ import (
 	"google.golang.org/grpc"
 	apb "google.golang.org/protobuf/types/known/anypb"
 
-	api "github.com/osrg/gobgp/v3/api"
+	"github.com/osrg/gobgp/v4/api"
 )
 
 func AddSRPolicy(client api.GobgpApiClient) error {
@@ -122,7 +122,7 @@ func AddSRPolicy(client api.GobgpApiClient) error {
 	}
 	attrs := []*any.Any{origin, nh, rt, tun}
 	if _, err := client.AddPath(context.TODO(), &api.AddPathRequest{
-		TableType: api.TableType_GLOBAL,
+		TableType: api.TableType_TABLE_TYPE_GLOBAL,
 		Path: &api.Path{
 			Nlri:      nlrisr,
 			Pattrs:    attrs,

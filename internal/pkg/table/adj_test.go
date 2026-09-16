@@ -16,39 +16,51 @@
 package table
 
 import (
+	"log/slog"
+	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestCreateAdjTable(t *testing.T) {
+	table := NewTable(logger, bgp.RF_RTC_UC)
+	assert.Equal(t, bgp.RF_RTC_UC, table.GetFamily())
+
+	table = NewTable(logger, bgp.RF_FS_IPv4_VPN)
+	assert.Equal(t, bgp.RF_FS_IPv4_VPN, table.GetFamily())
+}
 
 func TestAddPath(t *testing.T) {
 	pi := &PeerInfo{}
 	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
 
-	nlri1 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri1.SetPathIdentifier(1)
-	p1 := NewPath(pi, nlri1, false, attrs, time.Now(), false)
-	nlri2 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri2.SetPathIdentifier(2)
-	p2 := NewPath(pi, nlri2, false, attrs, time.Now(), false)
-	family := p1.GetRouteFamily()
-	families := []bgp.RouteFamily{family}
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p1 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, false, attrs, time.Now(), false)
+	p1.remoteID = 1
+	nlri2, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p2 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri2}, false, attrs, time.Now(), false)
+	p2.remoteID = 2
+	family := p1.GetFamily()
+	families := []bgp.Family{family}
 
-	adj := NewAdjRib(logger, families)
+	adj := NewAdjRib(slog.Default(), families)
 	adj.Update([]*Path{p1, p2})
-	assert.Equal(t, len(adj.table[family].destinations), 1)
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 2)
+	assert.Equal(t, len(adj.table[family].GetDestinations()), 1)
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 2)
 
-	p3 := NewPath(pi, nlri2, false, attrs, time.Now(), false)
+	p3 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri2}, false, attrs, time.Now(), false)
+	p3.remoteID = 2
 	adj.Update([]*Path{p3})
 
 	var found *Path
-	for _, d := range adj.table[family].destinations {
+	for _, d := range adj.table[family].GetDestinations() {
 		for _, p := range d.knownPathList {
-			if p.GetNlri().PathIdentifier() == nlri2.PathIdentifier() {
+			if p.remoteID == 2 {
 				found = p
 				break
 			}
@@ -56,109 +68,154 @@ func TestAddPath(t *testing.T) {
 	}
 	assert.Equal(t, found, p3)
 	adj.Update([]*Path{p3.Clone(true)})
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 1)
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 1)
 	adj.Update([]*Path{p1.Clone(true)})
-	assert.Equal(t, 0, len(adj.table[family].destinations))
+	assert.Equal(t, 0, len(adj.table[family].GetDestinations()))
 }
 
 func TestAddPathAdjOut(t *testing.T) {
 	pi := &PeerInfo{}
 	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
 
-	nlri1 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri1.SetPathIdentifier(1)
-	nlri1.SetPathLocalIdentifier(1)
-	p1 := NewPath(pi, nlri1, false, attrs, time.Now(), false)
-	nlri2 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri2.SetPathIdentifier(1)
-	nlri2.SetPathLocalIdentifier(2)
-	p2 := NewPath(pi, nlri2, false, attrs, time.Now(), false)
-	nlri3 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri3.SetPathIdentifier(2)
-	nlri3.SetPathLocalIdentifier(3)
-	p3 := NewPath(pi, nlri3, false, attrs, time.Now(), false)
-	nlri4 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	nlri4.SetPathIdentifier(3)
-	nlri4.SetPathLocalIdentifier(4)
-	p4 := NewPath(pi, nlri4, false, attrs, time.Now(), false)
-	family := p1.GetRouteFamily()
-	families := []bgp.RouteFamily{family}
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p1 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, false, attrs, time.Now(), false)
+	p1.localID = 1
+	p1.remoteID = 1
+	nlri2, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p2 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri2}, false, attrs, time.Now(), false)
+	p2.localID = 2
+	p2.remoteID = 1
+	nlri3, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p3 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri3}, false, attrs, time.Now(), false)
+	p3.localID = 3
+	p3.remoteID = 2
+	nlri4, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p4 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri4}, false, attrs, time.Now(), false)
+	p4.localID = 4
+	p4.remoteID = 3
+	family := p1.GetFamily()
+	families := []bgp.Family{family}
 
-	adj := NewAdjRib(logger, families)
+	adj := NewAdjRib(slog.Default(), families)
 	adj.UpdateAdjRibOut([]*Path{p1, p2, p3, p4})
-	assert.Equal(t, len(adj.table[family].destinations), 1)
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 4)
+	assert.Equal(t, len(adj.table[family].GetDestinations()), 1)
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 4)
 }
 
 func TestStale(t *testing.T) {
 	pi := &PeerInfo{}
 	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
 
-	nlri1 := bgp.NewIPAddrPrefix(24, "20.20.10.0")
-	p1 := NewPath(pi, nlri1, false, attrs, time.Now(), false)
-	nlri2 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	p2 := NewPath(pi, nlri2, false, attrs, time.Now(), false)
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.10.0/24"))
+	p1 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, false, attrs, time.Now(), false)
+	nlri2, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p2 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri2}, false, attrs, time.Now(), false)
 	p2.SetRejected(true)
 
-	family := p1.GetRouteFamily()
-	families := []bgp.RouteFamily{family}
+	family := p1.GetFamily()
+	families := []bgp.Family{family}
 
-	adj := NewAdjRib(logger, families)
+	adj := NewAdjRib(slog.Default(), families)
 	adj.Update([]*Path{p1, p2})
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 2)
-	assert.Equal(t, adj.Accepted([]bgp.RouteFamily{family}), 1)
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 2)
+	assert.Equal(t, adj.Accepted([]bgp.Family{family}), 1)
 
 	stalePathList := adj.StaleAll(families)
 	// As looped path should not be returned
 	assert.Equal(t, 1, len(stalePathList))
 
-	for _, p := range adj.PathList([]bgp.RouteFamily{family}, false) {
+	for _, p := range adj.PathList([]bgp.Family{family}, false) {
 		assert.True(t, p.IsStale())
 	}
 
-	nlri3 := bgp.NewIPAddrPrefix(24, "20.20.30.0")
-	p3 := NewPath(pi, nlri3, false, attrs, time.Now(), false)
+	nlri3, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.30.0/24"))
+	p3 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri3}, false, attrs, time.Now(), false)
 	adj.Update([]*Path{p1, p3})
 
 	droppedPathList := adj.DropStale(families)
 	assert.Equal(t, 2, len(droppedPathList))
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 1)
-	assert.Equal(t, 1, len(adj.table[family].destinations))
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 1)
+	assert.Equal(t, 1, len(adj.table[family].GetDestinations()))
 }
 
 func TestLLGRStale(t *testing.T) {
 	pi := &PeerInfo{}
 	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
 
-	nlri1 := bgp.NewIPAddrPrefix(24, "20.20.10.0")
-	p1 := NewPath(pi, nlri1, false, attrs, time.Now(), false)
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.10.0/24"))
+	p1 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, false, attrs, time.Now(), false)
 
-	nlri2 := bgp.NewIPAddrPrefix(24, "20.20.20.0")
-	p2 := NewPath(pi, nlri2, false, attrs, time.Now(), false)
+	nlri2, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p2 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri2}, false, attrs, time.Now(), false)
 	p2.SetRejected(true) // Not accepted
 
-	nlri3 := bgp.NewIPAddrPrefix(24, "20.20.30.0")
-	p3 := NewPath(pi, nlri3, false, attrs, time.Now(), false)
+	nlri3, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.30.0/24"))
+	p3 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri3}, false, attrs, time.Now(), false)
 	p3.SetRejected(true)
 	// Not accepted and then dropped on MarkLLGRStaleOrDrop
 	p3.SetCommunities([]uint32{uint32(bgp.COMMUNITY_NO_LLGR)}, false)
 
-	nlri4 := bgp.NewIPAddrPrefix(24, "20.20.40.0")
-	p4 := NewPath(pi, nlri4, false, attrs, time.Now(), false)
+	nlri4, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.40.0/24"))
+	p4 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri4}, false, attrs, time.Now(), false)
 	// dropped on MarkLLGRStaleOrDrop
 	p4.SetCommunities([]uint32{uint32(bgp.COMMUNITY_NO_LLGR)}, false)
 
-	family := p1.GetRouteFamily()
-	families := []bgp.RouteFamily{family}
+	family := p1.GetFamily()
+	families := []bgp.Family{family}
 
-	adj := NewAdjRib(logger, families)
+	adj := NewAdjRib(slog.Default(), families)
 	adj.Update([]*Path{p1, p2, p3, p4})
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 4)
-	assert.Equal(t, adj.Accepted([]bgp.RouteFamily{family}), 2)
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 4)
+	assert.Equal(t, adj.Accepted([]bgp.Family{family}), 2)
 
 	pathList := adj.MarkLLGRStaleOrDrop(families)
 	assert.Equal(t, 3, len(pathList)) // Does not return aslooped path that is retained in adjrib
-	assert.Equal(t, adj.Count([]bgp.RouteFamily{family}), 2)
-	assert.Equal(t, adj.Accepted([]bgp.RouteFamily{family}), 1)
-	assert.Equal(t, 2, len(adj.table[family].destinations))
+	assert.Equal(t, adj.Count([]bgp.Family{family}), 2)
+	assert.Equal(t, adj.Accepted([]bgp.Family{family}), 1)
+	assert.Equal(t, 2, len(adj.table[family].GetDestinations()))
+
+	retained := adj.PathList([]bgp.Family{family}, false)
+	require.Len(t, retained, 2)
+	var retainedRejected *Path
+	for _, p := range retained {
+		if p.IsRejected() {
+			retainedRejected = p
+			break
+		}
+	}
+	require.NotNil(t, retainedRejected)
+	assert.Contains(t, retainedRejected.GetCommunities(), uint32(bgp.COMMUNITY_LLGR_STALE))
+}
+
+func TestUpdateUnknownFamily(t *testing.T) {
+	// A path whose address family is not registered in adj.table must be
+	// silently skipped — not panic — in both Update and UpdateAdjRibOut.
+	// This covers the treat-as-withdraw path triggered by a malformed BGP
+	// UPDATE (RFC 7606): the peer may send NLRI for a family the local side
+	// never negotiated, causing a nil table lookup.
+	pi := &PeerInfo{}
+	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
+
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("10.0.0.0/24"))
+	p4 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, false, attrs, time.Now(), false)
+	// AdjRib only knows about IPv6; IPv4 path is unconfigured.
+	adj := NewAdjRib(slog.Default(), []bgp.Family{bgp.RF_IPv6_UC})
+	assert.NotPanics(t, func() { adj.Update([]*Path{p4}) })
+	assert.NotPanics(t, func() { adj.UpdateAdjRibOut([]*Path{p4}) })
+}
+
+func TestWithdrawUnknownPath(t *testing.T) {
+	pi := &PeerInfo{}
+	attrs := []bgp.PathAttributeInterface{bgp.NewPathAttributeOrigin(0)}
+
+	nlri1, _ := bgp.NewIPAddrPrefix(netip.MustParsePrefix("20.20.20.0/24"))
+	p1 := NewPath(bgp.RF_IPv4_UC, pi, bgp.PathNLRI{NLRI: nlri1}, true, attrs, time.Now(), false)
+	family := p1.GetFamily()
+	families := []bgp.Family{family}
+
+	adj := NewAdjRib(logger, families)
+	adj.Update([]*Path{p1})
+	// Check that the table is empty (no destinations across all shards)
+	dests := adj.table[family].GetDestinations()
+	assert.Equal(t, 0, len(dests))
 }

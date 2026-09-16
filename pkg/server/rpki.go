@@ -20,15 +20,16 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"net/netip"
 	"strconv"
 	"time"
 
-	"github.com/osrg/gobgp/v3/internal/pkg/table"
-	"github.com/osrg/gobgp/v3/pkg/config/oc"
-	"github.com/osrg/gobgp/v3/pkg/log"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
-	"github.com/osrg/gobgp/v3/pkg/packet/rtr"
+	"github.com/osrg/gobgp/v4/internal/pkg/table"
+	"github.com/osrg/gobgp/v4/pkg/config/oc"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
+	"github.com/osrg/gobgp/v4/pkg/packet/rtr"
 )
 
 const (
@@ -53,16 +54,17 @@ type roaEvent struct {
 	Src       string
 	Data      []byte
 	conn      *net.TCPConn
+	timestamp time.Time
 }
 
 type roaManager struct {
 	eventCh   chan *roaEvent
 	clientMap map[string]*roaClient
 	table     *table.ROATable
-	logger    log.Logger
+	logger    *slog.Logger
 }
 
-func newROAManager(table *table.ROATable, logger log.Logger) *roaManager {
+func newROAManager(table *table.ROATable, logger *slog.Logger) *roaManager {
 	m := &roaManager{
 		eventCh:   make(chan *roaEvent),
 		clientMap: make(map[string]*roaClient),
@@ -106,8 +108,7 @@ func (m *roaManager) Enable(address string) error {
 	for network, client := range m.clientMap {
 		add, _, _ := net.SplitHostPort(network)
 		if add == address {
-			client.enable(client.serialNumber)
-			return nil
+			return client.enable(client.serialNumber)
 		}
 	}
 	return fmt.Errorf("ROA server not found %s", address)
@@ -133,9 +134,8 @@ func (m *roaManager) SoftReset(address string) error {
 	for network, client := range m.clientMap {
 		add, _, _ := net.SplitHostPort(network)
 		if add == address {
-			client.softReset()
 			m.table.DeleteAll(network)
-			return nil
+			return client.softReset()
 		}
 	}
 	return fmt.Errorf("ROA server not found %s", address)
@@ -149,6 +149,7 @@ func (c *roaClient) lifetimeout() {
 	c.eventCh <- &roaEvent{
 		EventType: roaLifetimeout,
 		Src:       c.host,
+		timestamp: time.Now(),
 	}
 }
 
@@ -159,17 +160,15 @@ func (m *roaManager) HandleROAEvent(ev *roaEvent) {
 			ev.conn.Close()
 		}
 		m.logger.Error("Can't find ROA server configuration",
-			log.Fields{
-				"Topic": "rpki",
-				"Key":   ev.Src})
+			slog.String("Topic", "rpki"),
+			slog.Any("Key", ev.Src))
 		return
 	}
 	switch ev.EventType {
 	case roaDisconnected:
 		m.logger.Info("ROA server is disconnected",
-			log.Fields{
-				"Topic": "rpki",
-				"Key":   ev.Src})
+			slog.String("Topic", "rpki"),
+			slog.Any("Key", ev.Src))
 		client.state.Downtime = time.Now().Unix()
 		// clear state
 		client.endOfData = false
@@ -181,9 +180,8 @@ func (m *roaManager) HandleROAEvent(ev *roaEvent) {
 		client.oldSessionID = client.sessionID
 	case roaConnected:
 		m.logger.Info("ROA server is connected",
-			log.Fields{
-				"Topic": "rpki",
-				"Key":   ev.Src})
+			slog.String("Topic", "rpki"),
+			slog.Any("Key", ev.Src))
 		client.conn = ev.conn
 		client.state.Uptime = time.Now().Unix()
 		go client.established()
@@ -199,14 +197,14 @@ func (m *roaManager) HandleROAEvent(ev *roaEvent) {
 		// so should not be here.
 		if client.oldSessionID != client.sessionID {
 			m.logger.Info("Reconnected, ignore timeout",
-				log.Fields{
-					"Topic": "rpki",
-					"Key":   client.host})
+				slog.String("Topic", "rpki"),
+				slog.String("Key", client.host),
+			)
 		} else {
 			m.logger.Info("Deleting all ROAs due to timeout",
-				log.Fields{
-					"Topic": "rpki",
-					"Key":   client.host})
+				slog.String("Topic", "rpki"),
+				slog.String("Key", client.host),
+			)
 			m.table.DeleteAll(client.host)
 		}
 	}
@@ -219,13 +217,25 @@ func (m *roaManager) handleRTRMsg(client *roaClient, state *oc.RpkiServerState, 
 	if err == nil {
 		switch msg := m1.(type) {
 		case *rtr.RTRSerialNotify:
-			if before(client.serialNumber, msg.RTRCommon.SerialNumber) {
-				client.enable(client.serialNumber)
-			} else if client.serialNumber == msg.RTRCommon.SerialNumber {
+			if before(client.serialNumber, msg.SerialNumber) {
+				if err := client.enable(client.serialNumber); err != nil {
+					m.logger.Error("Failed to send serial query",
+						slog.String("Topic", "rpki"),
+						slog.String("Host", client.host),
+						slog.String("Error", err.Error()),
+					)
+				}
+			} else if client.serialNumber == msg.SerialNumber {
 				// nothing
 			} else {
 				// should not happen. try to get the whole ROAs.
-				client.softReset()
+				if err := client.softReset(); err != nil {
+					m.logger.Error("Failed to send soft reset",
+						slog.String("Topic", "rpki"),
+						slog.String("Host", client.host),
+						slog.String("Error", err.Error()),
+					)
+				}
 			}
 			received.SerialNotify++
 		case *rtr.RTRSerialQuery:
@@ -241,8 +251,8 @@ func (m *roaManager) handleRTRMsg(client *roaClient, state *oc.RpkiServerState, 
 				family = bgp.AFI_IP6
 				received.Ipv6Prefix++
 			}
-			roa := table.NewROA(family, msg.Prefix, msg.PrefixLen, msg.MaxLen, msg.AS, client.host)
-			if (msg.Flags & 1) == 1 {
+			roa := table.NewROA(family, msg.Prefix.AsSlice(), msg.PrefixLen, msg.MaxLen, msg.AS, client.host)
+			if msg.Flags&1 == 1 {
 				if client.endOfData {
 					m.table.Add(roa)
 				} else {
@@ -253,13 +263,13 @@ func (m *roaManager) handleRTRMsg(client *roaClient, state *oc.RpkiServerState, 
 			}
 		case *rtr.RTREndOfData:
 			received.EndOfData++
-			if client.sessionID != msg.RTRCommon.SessionID {
+			if client.sessionID != msg.SessionID {
 				// remove all ROAs related with the
 				// previous session
 				m.table.DeleteAll(client.host)
 			}
-			client.sessionID = msg.RTRCommon.SessionID
-			client.serialNumber = msg.RTRCommon.SerialNumber
+			client.sessionID = msg.SessionID
+			client.serialNumber = msg.SerialNumber
 			client.endOfData = true
 			if client.timer != nil {
 				client.timer.Stop()
@@ -270,17 +280,22 @@ func (m *roaManager) handleRTRMsg(client *roaClient, state *oc.RpkiServerState, 
 			}
 			client.pendingROAs = make([]*table.ROA, 0)
 		case *rtr.RTRCacheReset:
-			client.softReset()
+			if err := client.softReset(); err != nil {
+				m.logger.Error("Failed to send soft reset",
+					slog.String("Topic", "rpki"),
+					slog.String("Host", client.host),
+					slog.String("Error", err.Error()))
+			}
 			received.CacheReset++
 		case *rtr.RTRErrorReport:
 			received.Error++
 		}
 	} else {
 		m.logger.Info("Failed to parse an RTR message",
-			log.Fields{
-				"Topic": "rpki",
-				"Host":  client.host,
-				"Error": err})
+			slog.String("Topic", "rpki"),
+			slog.String("Host", client.host),
+			slog.String("Error", err.Error()),
+		)
 	}
 }
 
@@ -312,7 +327,7 @@ func (m *roaManager) GetServers() []*oc.RpkiServer {
 		addr, port, _ := net.SplitHostPort(client.host)
 		l = append(l, &oc.RpkiServer{
 			Config: oc.RpkiServerConfig{
-				Address: addr,
+				Address: netip.MustParseAddr(addr),
 				// Note: RpkiServerConfig.Port is uint32 type, but the TCP/UDP
 				// port is 16-bit length.
 				Port: func() uint32 { p, _ := strconv.ParseUint(port, 10, 16); return uint32(p) }(),
@@ -407,6 +422,7 @@ func (c *roaClient) tryConnect() {
 				EventType: roaConnected,
 				Src:       c.host,
 				conn:      conn.(*net.TCPConn),
+				timestamp: time.Now(),
 			}
 			return
 		}
@@ -419,6 +435,7 @@ func (c *roaClient) established() (err error) {
 		c.eventCh <- &roaEvent{
 			EventType: roaDisconnected,
 			Src:       c.host,
+			timestamp: time.Now(),
 		}
 	}()
 
@@ -427,24 +444,38 @@ func (c *roaClient) established() (err error) {
 	}
 
 	for {
-		header := make([]byte, rtr.RTR_MIN_LEN)
-		if _, err = io.ReadFull(c.conn, header); err != nil {
+		var data []byte
+		data, err = readRTRMessage(c.conn)
+		if err != nil {
 			return err
-		}
-		totalLen := binary.BigEndian.Uint32(header[4:8])
-		if totalLen < rtr.RTR_MIN_LEN {
-			return fmt.Errorf("too short header length %v", totalLen)
-		}
-
-		body := make([]byte, totalLen-rtr.RTR_MIN_LEN)
-		if _, err = io.ReadFull(c.conn, body); err != nil {
-			return
 		}
 
 		c.eventCh <- &roaEvent{
 			EventType: roaRTR,
 			Src:       c.host,
-			Data:      append(header, body...),
+			Data:      data,
+			timestamp: time.Now(),
 		}
 	}
+}
+
+func readRTRMessage(r io.Reader) ([]byte, error) {
+	header := make([]byte, rtr.RTR_MIN_LEN)
+	if _, err := io.ReadFull(r, header); err != nil {
+		return nil, err
+	}
+	totalLen := binary.BigEndian.Uint32(header[4:8])
+	if totalLen < rtr.RTR_MIN_LEN {
+		return nil, fmt.Errorf("too short header length %v", totalLen)
+	}
+	if totalLen > rtr.RTR_MAX_LEN {
+		return nil, fmt.Errorf("too large header length %v", totalLen)
+	}
+
+	body := make([]byte, totalLen-rtr.RTR_MIN_LEN)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return nil, err
+	}
+
+	return append(header, body...), nil
 }

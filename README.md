@@ -2,7 +2,7 @@
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/osrg/gobgp)](https://goreportcard.com/report/github.com/osrg/gobgp)
 [![Tests](https://github.com/osrg/gobgp/actions/workflows/ci.yml/badge.svg)](https://github.com/osrg/gobgp/actions/workflows/ci.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/osrg/gobgp/v3.svg)](https://pkg.go.dev/github.com/osrg/gobgp/v3)
+[![Go Reference](https://pkg.go.dev/badge/github.com/osrg/gobgp/v4.svg)](https://pkg.go.dev/github.com/osrg/gobgp/v4)
 [![Releases](https://img.shields.io/github/release/osrg/gobgp/all.svg?style=flat-square)](https://github.com/osrg/gobgp/releases)
 [![LICENSE](https://img.shields.io/github/license/osrg/gobgp.svg?style=flat-square)](https://github.com/osrg/gobgp/blob/master/LICENSE)
 
@@ -35,10 +35,11 @@ Try [a binary release](https://github.com/osrg/gobgp/releases/latest).
 - [EVPN](docs/sources/evpn.md)
 - [Flowspec](docs/sources/flowspec.md)
 - [RPKI](docs/sources/rpki.md)
+- [Metrics](docs/sources/metrics.md)
 - [Managing GoBGP with your favorite language with gRPC](docs/sources/grpc-client.md)
 - Go Native BGP Library
   - [Basics](docs/sources/lib.md)
-  - [BGP-LS](docs/sources/lib-ls.md)
+  - [BGP-LS](docs/sources/bgp-ls.md)
   - [SR Policy](docs/sources/lib-srpolicy.md)
 - [Graceful Restart](docs/sources/graceful-restart.md)
 - [Additional Paths](docs/sources/add-paths.md)
@@ -46,20 +47,23 @@ Try [a binary release](https://github.com/osrg/gobgp/releases/latest).
 - [Dynamic Neighbor](docs/sources/dynamic-neighbor.md)
 - [eBGP Multihop](docs/sources/ebgp-multihop.md)
 - [TTL Security](docs/sources/ttl-security.md)
+- [BFD](docs/sources/bfd.md)
 - [Confederation](docs/sources/bgp-confederation.md)
 - Data Center Networking
   - [Unnumbered BGP](docs/sources/unnumbered-bgp.md)
+- [Sentry](docs/sources/sentry.md)
 
 ### Externals
 
 - [Tutorial: Using GoBGP as an IXP connecting router](http://www.slideshare.net/shusugimoto1986/tutorial-using-gobgp-as-an-ixp-connecting-router)
+- [GoBGP.nix: A NixOS module for GoBGP. Containing a working FRR implementation and a rich set of Options](https://github.com/wavelens/gobgp.nix)
 
 ## Community, discussion and support
 
 We have the [Slack](https://join.slack.com/t/gobgp/shared_invite/zt-g9il5j8i-3gZwnXArK0O9Mnn4Yu~IrQ) for questions, discussion, suggestions, etc.
 
 You have code or documentation for GoBGP? Awesome! Send a pull
-request. No CLA, board members, governance, or other mess. See [`BUILD.md`](BUILD.md) for info on
+request. No CLA, board members, governance, or other mess. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for info on
 code contributing.
 
 ## Licensing

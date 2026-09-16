@@ -18,26 +18,142 @@ package apiutil
 import (
 	"encoding/json"
 	"fmt"
-	"net"
+	"net/netip"
 	"time"
 
-	api "github.com/osrg/gobgp/v3/api"
-	"github.com/osrg/gobgp/v3/pkg/packet/bgp"
+	"github.com/google/uuid"
+	"github.com/osrg/gobgp/v4/api"
+	"github.com/osrg/gobgp/v4/pkg/packet/bgp"
 	tspb "google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// workaround. This for the json format compatibility. Once we update senario tests, we can remove this.
+type PeerEventType uint32
+
+const (
+	PEER_EVENT_UNKNOWN     PeerEventType = 0
+	PEER_EVENT_INIT        PeerEventType = 1
+	PEER_EVENT_END_OF_INIT PeerEventType = 2
+	PEER_EVENT_STATE       PeerEventType = 3
+)
+
+// WatchEventMessages API type
+type WatchEventMessage_PeerEvent struct {
+	Type PeerEventType
+	Peer Peer
+}
+
+// ListPathRequest is used by server.ListPath API
+type ListPathRequest struct {
+	TableType      api.TableType
+	Name           string
+	Family         bgp.Family
+	Prefixes       []*LookupPrefix
+	SortType       api.ListPathRequest_SortType
+	EnableFiltered bool
+}
+
+// AddPathRequest is used by server.AddPath API
+type AddPathRequest struct {
+	VRFID string
+	Paths []*Path
+}
+
+// AddPathResponse is used by server.AddPath API
+type AddPathResponse struct {
+	UUID  uuid.UUID
+	Error error
+}
+
+type DeletePathRequest struct {
+	VRFID        string
+	UUIDs        []uuid.UUID
+	DeleteAll    bool
+	DeleteFamily *bgp.Family
+	Paths        []*Path
+}
+
+type LookupOption uint8
+
+const (
+	LOOKUP_EXACT LookupOption = iota
+	LOOKUP_LONGER
+	LOOKUP_SHORTER
+)
+
+// LookupOptionFromAPI converts a protobuf TableLookupPrefix_Type to a
+// LookupOption. A direct cast is wrong because the proto enum reserves 0 for
+// UNSPECIFIED and starts meaningful values at 1, while LookupOption's iota
+// starts at 0 (EXACT).
+func LookupOptionFromAPI(t api.TableLookupPrefix_Type) LookupOption {
+	switch t {
+	case api.TableLookupPrefix_TYPE_LONGER:
+		return LOOKUP_LONGER
+	case api.TableLookupPrefix_TYPE_SHORTER:
+		return LOOKUP_SHORTER
+	default:
+		return LOOKUP_EXACT
+	}
+}
+
+type LookupPrefix struct {
+	Prefix string
+	RD     string
+	LookupOption
+}
+
+// used by server.WatchEventMessages API
 type Path struct {
-	Nlri  bgp.AddrPrefixInterface      `json:"nlri"`
-	Age   int64                        `json:"age"`
-	Best  bool                         `json:"best"`
-	Attrs []bgp.PathAttributeInterface `json:"attrs"`
-	Stale bool                         `json:"stale"`
-	// true if the path has been filtered out due to max path count reached
-	SendMaxFiltered bool   `json:"send-max-filtered,omitempty"`
-	Withdrawal      bool   `json:"withdrawal,omitempty"`
-	SourceID        net.IP `json:"source-id,omitempty"`
-	NeighborIP      net.IP `json:"neighbor-ip,omitempty"`
+	Family             bgp.Family
+	Nlri               bgp.NLRI                     `json:"nlri"`
+	Age                int64                        `json:"age"`
+	Best               bool                         `json:"best"`
+	Attrs              []bgp.PathAttributeInterface `json:"attrs"`
+	Stale              bool                         `json:"stale"`
+	Withdrawal         bool                         `json:"withdrawal,omitempty"`
+	PeerASN            uint32                       `json:"peer-asn,omitempty"`
+	PeerID             netip.Addr                   `json:"peer-id,omitzero"`
+	PeerAddress        netip.Addr                   `json:"peer-address,omitzero"`
+	IsFromExternal     bool                         `json:"is-from-external,omitempty"`
+	NoImplicitWithdraw bool                         `json:"no-implicit-withdraw,omitempty"`
+	IsNexthopInvalid   bool                         `json:"is-nexthop-invalid,omitempty"`
+	// the following fields are used only repoted by GetList() API
+	SendMaxFiltered bool            `json:"send-max-filtered,omitempty"` // true if the path has been filtered out due to max path count reached
+	Filtered        bool            `json:"filtered,omitempty"`
+	Validation      *api.Validation `json:"validation,omitempty"`
+	RemoteID        uint32
+	LocalID         uint32
+}
+
+type PeerConf struct {
+	PeerASN           uint32
+	LocalASN          uint32
+	NeighborAddress   netip.Addr
+	NeighborInterface string
+	PeerGroup         string
+}
+type PeerState struct {
+	PeerASN           uint32
+	LocalASN          uint32
+	NeighborAddress   netip.Addr
+	SessionState      bgp.FSMState
+	AdminState        api.PeerState_AdminState
+	RouterID          netip.Addr
+	PeerGroup         string
+	RemoteCap         []bgp.ParameterCapabilityInterface
+	LocalCap          []bgp.ParameterCapabilityInterface
+	DisconnectReason  api.PeerState_DisconnectReason
+	DisconnectMessage string
+}
+type Transport struct {
+	LocalAddress netip.Addr
+	LocalPort    uint32
+	RemotePort   uint32
+}
+
+type Peer struct {
+	Conf      PeerConf
+	State     PeerState
+	Transport Transport
 }
 
 type Destination struct {
@@ -51,6 +167,8 @@ func (d *Destination) MarshalJSON() ([]byte, error) {
 func NewDestination(dst *api.Destination) *Destination {
 	l := make([]*Path, 0, len(dst.Paths))
 	for _, p := range dst.Paths {
+		src, _ := netip.ParseAddr(p.SourceId)
+		neighbor, _ := netip.ParseAddr(p.NeighborIp)
 		nlri, _ := GetNativeNlri(p)
 		attrs, _ := GetNativePathAttributes(p)
 		l = append(l, &Path{
@@ -61,14 +179,14 @@ func NewDestination(dst *api.Destination) *Destination {
 			Stale:           p.Stale,
 			SendMaxFiltered: p.SendMaxFiltered,
 			Withdrawal:      p.IsWithdraw,
-			SourceID:        net.ParseIP(p.SourceId),
-			NeighborIP:      net.ParseIP(p.NeighborIp),
+			PeerID:          src,
+			PeerAddress:     neighbor,
 		})
 	}
 	return &Destination{Paths: l}
 }
 
-func NewPath(nlri bgp.AddrPrefixInterface, isWithdraw bool, attrs []bgp.PathAttributeInterface, age time.Time) (*api.Path, error) {
+func NewPath(family bgp.Family, nlri bgp.NLRI, isWithdraw bool, attrs []bgp.PathAttributeInterface, age time.Time) (*api.Path, error) {
 	n, err := MarshalNLRI(nlri)
 	if err != nil {
 		return nil, err
@@ -82,31 +200,18 @@ func NewPath(nlri bgp.AddrPrefixInterface, isWithdraw bool, attrs []bgp.PathAttr
 		Pattrs:     a,
 		Age:        tspb.New(age),
 		IsWithdraw: isWithdraw,
-		Family:     ToApiFamily(nlri.AFI(), nlri.SAFI()),
-		Identifier: nlri.PathIdentifier(),
+		Family:     ToApiFamily(family.Afi(), family.Safi()),
 	}, nil
 }
 
-func getNLRI(family bgp.RouteFamily, buf []byte) (bgp.AddrPrefixInterface, error) {
-	afi, safi := bgp.RouteFamilyToAfiSafi(family)
-	nlri, err := bgp.NewPrefixFromRouteFamily(afi, safi)
-	if err != nil {
-		return nil, err
-	}
-	if err := nlri.DecodeFromBytes(buf); err != nil {
-		return nil, err
-	}
-	return nlri, nil
-}
-
-func GetNativeNlri(p *api.Path) (bgp.AddrPrefixInterface, error) {
+func GetNativeNlri(p *api.Path) (bgp.NLRI, error) {
 	if p.Family == nil {
 		return nil, fmt.Errorf("family cannot be nil")
 	}
 	if len(p.NlriBinary) > 0 {
-		return getNLRI(ToRouteFamily(p.Family), p.NlriBinary)
+		return bgp.NLRIFromSlice(ToFamily(p.Family), p.NlriBinary)
 	}
-	return UnmarshalNLRI(ToRouteFamily(p.Family), p.Nlri)
+	return UnmarshalNLRI(ToFamily(p.Family), p.Nlri)
 }
 
 func GetNativePathAttributes(p *api.Path) ([]bgp.PathAttributeInterface, error) {
@@ -129,8 +234,8 @@ func GetNativePathAttributes(p *api.Path) ([]bgp.PathAttributeInterface, error) 
 	return UnmarshalPathAttributes(p.Pattrs)
 }
 
-func ToRouteFamily(f *api.Family) bgp.RouteFamily {
-	return bgp.AfiSafiToRouteFamily(uint16(f.Afi), uint8(f.Safi))
+func ToFamily(f *api.Family) bgp.Family {
+	return bgp.NewFamily(uint16(f.Afi), uint8(f.Safi))
 }
 
 func ToApiFamily(afi uint16, safi uint8) *api.Family {
